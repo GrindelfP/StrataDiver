@@ -48,7 +48,7 @@ class Minecraft {
     private val model = Matrix4f()
 
     // CAMERA STATE
-    private var cameraPos = org.joml.Vector3f(0f, 0f, 3f)
+    private var cameraPos = org.joml.Vector3f(5f, 10f, 5f)
     private var cameraFront = org.joml.Vector3f(0f, 0f, -1f)
     private var cameraUp = org.joml.Vector3f(0f, 1f, 0f)
 
@@ -58,95 +58,173 @@ class Minecraft {
     private var lastY = 360.0
     private var firstMouse = true
 
+    // CHUNK properties
+    private var chunk = Chunk(0, 0, 0)
+    private var vertexCount = 0
+
+    // PHYSICS
+    private var velocity = org.joml.Vector3f(0f, 0f, 0f)
+    private val gravity = -0.015f
+    private val jumpForce = 0.25f
+    private var isGrounded = false
+
+    // Player dimensions
+    private val playerWidth = 0.3f
+    private val playerHeight = 1.8f
+
     fun run() {
         init()
-        setupCube()
+        setupChunk()
         loop()
     }
 
-    private fun setupCube() {
-        val vertices = floatArrayOf(
-            // Positions            // Colors (R, G, B)
-            -0.5f, -0.5f, -0.5f, 0.2f, 0.2f, 0.2f, // Back face
-            0.5f, -0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
-            0.5f, 0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
-            -0.5f, 0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
+    private fun setupChunk() {
+        // 1. Generate the mesh data from our Chunk object
+        val vertices = MeshGenerator.generateChunkMesh(chunk)
+        vertexCount = vertices.size / 6 // 6 floats per vertex (3 for Position, 3 for Color)
 
-            -0.5f, -0.5f, 0.5f, 0.8f, 0.8f, 0.8f, // Front face
-            0.5f, -0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
-            0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
-            -0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
-
-            -0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, // Left face
-            -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
-            -0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
-            -0.5f, -0.5f, 0.5f, 0.5f, 0.5f, 0.5f,
-
-            0.5f, 0.5f, 0.5f, 0.6f, 0.6f, 0.6f, // Right face
-            0.5f, 0.5f, -0.5f, 0.6f, 0.6f, 0.6f,
-            0.5f, -0.5f, -0.5f, 0.6f, 0.6f, 0.6f,
-            0.5f, -0.5f, 0.5f, 0.6f, 0.6f, 0.6f,
-
-            -0.5f, -0.5f, -0.5f, 0.3f, 0.3f, 0.3f, // Bottom face
-            0.5f, -0.5f, -0.5f, 0.3f, 0.3f, 0.3f,
-            0.5f, -0.5f, 0.5f, 0.3f, 0.3f, 0.3f,
-            -0.5f, -0.5f, 0.5f, 0.3f, 0.3f, 0.3f,
-
-            -0.5f, 0.5f, -0.5f, 0.9f, 0.9f, 0.9f, // Top face
-            0.5f, 0.5f, -0.5f, 0.9f, 0.9f, 0.9f,
-            0.5f, 0.5f, 0.5f, 0.9f, 0.9f, 0.9f,
-            -0.5f, 0.5f, 0.5f, 0.9f, 0.9f, 0.9f
-        )
-
-        val indices = intArrayOf(
-            0, 1, 2, 2, 3, 0,       // Back
-            4, 5, 6, 6, 7, 4,       // Front
-            8, 9, 10, 10, 11, 8,    // Left
-            12, 13, 14, 14, 15, 12, // Right
-            16, 17, 18, 18, 19, 16, // Bottom
-            20, 21, 22, 22, 23, 20  // Top
-        )
-
-        // Generate VAO and VBO (Standard OpenGL boilerplate)
+        // 2. Generate and Bind Vertex Array Object (VAO)
+        // The VAO stores the layout of our data
         vao = glGenVertexArrays()
-        val vbo = glGenBuffers()
-        val ebo = glGenBuffers()
-
         glBindVertexArray(vao)
 
+        // 3. Generate and Bind Vertex Buffer Object (VBO)
+        // The VBO stores the actual vertex data on the GPU
+        val vbo = glGenBuffers()
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices, GL_STATIC_DRAW)
+        // 4. Define Vertex Attribute Layout
+        // Stride is 6 * 4 bytes (6 floats total, each float is 4 bytes)
+        val stride = 6 * 4
 
-        // Position attribute
-        glVertexAttribPointer(0, 3, GL_FLOAT, false, 6 * 4, 0)
+        // Position Attribute (Location 0 in vertex.glsl)
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
         glEnableVertexAttribArray(0)
-        // Color attribute
-        glVertexAttribPointer(1, 3, GL_FLOAT, false, 6 * 4, (3 * 4).toLong())
+
+        // Color Attribute (Location 1 in vertex.glsl)
+        // Offset is 3 * 4 bytes (it starts after the 3 position floats)
+        glVertexAttribPointer(1, 3, GL_FLOAT, false, stride, (3 * 4).toLong())
         glEnableVertexAttribArray(1)
 
-        // Load Shaders (Simplified loader)
+        // 5. Shader Compilation Logic
         val vShader = glCreateShader(GL_VERTEX_SHADER).also {
             glShaderSource(it, File("src/main/resources/shaders/vertex.glsl").readText())
             glCompileShader(it)
+            // Check for compilation errors
+            if (glGetShaderi(it, GL_COMPILE_STATUS) == GL_FALSE) {
+                throw RuntimeException("Vertex Shader Compilation Failed: ${glGetShaderInfoLog(it)}")
+            }
         }
+
         val fShader = glCreateShader(GL_FRAGMENT_SHADER).also {
             glShaderSource(it, File("src/main/resources/shaders/fragment.glsl").readText())
             glCompileShader(it)
+            // Check for compilation errors
+            if (glGetShaderi(it, GL_COMPILE_STATUS) == GL_FALSE) {
+                throw RuntimeException("Fragment Shader Compilation Failed: ${glGetShaderInfoLog(it)}")
+            }
         }
+
+        // 6. Link Shaders into a Program
         shaderProgram = glCreateProgram().also {
             glAttachShader(it, vShader)
             glAttachShader(it, fShader)
             glLinkProgram(it)
+            // Check for linking errors
+            if (glGetProgrami(it, GL_LINK_STATUS) == GL_FALSE) {
+                throw RuntimeException("Shader Program Linking Failed: ${glGetProgramInfoLog(it)}")
+            }
         }
+
+        // 7. Cleanup: Once linked, individual shaders can be deleted
+        glDeleteShader(vShader)
+        glDeleteShader(fShader)
     }
+
+//    private fun setupCube() {
+//        val vertices = floatArrayOf(
+//            // Positions            // Colors (R, G, B)
+//            -0.5f, -0.5f, -0.5f, 0.2f, 0.2f, 0.2f, // Back face
+//            0.5f, -0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
+//            0.5f, 0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
+//            -0.5f, 0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
+//
+//            -0.5f, -0.5f, 0.5f, 0.8f, 0.8f, 0.8f, // Front face
+//            0.5f, -0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
+//            0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
+//            -0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
+//
+//            -0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, // Left face
+//            -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
+//            -0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
+//            -0.5f, -0.5f, 0.5f, 0.5f, 0.5f, 0.5f,
+//
+//            0.5f, 0.5f, 0.5f, 0.6f, 0.6f, 0.6f, // Right face
+//            0.5f, 0.5f, -0.5f, 0.6f, 0.6f, 0.6f,
+//            0.5f, -0.5f, -0.5f, 0.6f, 0.6f, 0.6f,
+//            0.5f, -0.5f, 0.5f, 0.6f, 0.6f, 0.6f,
+//
+//            -0.5f, -0.5f, -0.5f, 0.3f, 0.3f, 0.3f, // Bottom face
+//            0.5f, -0.5f, -0.5f, 0.3f, 0.3f, 0.3f,
+//            0.5f, -0.5f, 0.5f, 0.3f, 0.3f, 0.3f,
+//            -0.5f, -0.5f, 0.5f, 0.3f, 0.3f, 0.3f,
+//
+//            -0.5f, 0.5f, -0.5f, 0.9f, 0.9f, 0.9f, // Top face
+//            0.5f, 0.5f, -0.5f, 0.9f, 0.9f, 0.9f,
+//            0.5f, 0.5f, 0.5f, 0.9f, 0.9f, 0.9f,
+//            -0.5f, 0.5f, 0.5f, 0.9f, 0.9f, 0.9f
+//        )
+//
+//        val indices = intArrayOf(
+//            0, 1, 2, 2, 3, 0,       // Back
+//            4, 5, 6, 6, 7, 4,       // Front
+//            8, 9, 10, 10, 11, 8,    // Left
+//            12, 13, 14, 14, 15, 12, // Right
+//            16, 17, 18, 18, 19, 16, // Bottom
+//            20, 21, 22, 22, 23, 20  // Top
+//        )
+//
+//        // Generate VAO and VBO (Standard OpenGL boilerplate)
+//        vao = glGenVertexArrays()
+//        val vbo = glGenBuffers()
+//        val ebo = glGenBuffers()
+//
+//        glBindVertexArray(vao)
+//
+//        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+//        glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
+//
+//        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
+//        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices, GL_STATIC_DRAW)
+//
+//        // Position attribute
+//        glVertexAttribPointer(0, 3, GL_FLOAT, false, 6 * 4, 0)
+//        glEnableVertexAttribArray(0)
+//        // Color attribute
+//        glVertexAttribPointer(1, 3, GL_FLOAT, false, 6 * 4, (3 * 4).toLong())
+//        glEnableVertexAttribArray(1)
+//
+//        // Load Shaders (Simplified loader)
+//        val vShader = glCreateShader(GL_VERTEX_SHADER).also {
+//            glShaderSource(it, File("src/main/resources/shaders/vertex.glsl").readText())
+//            glCompileShader(it)
+//        }
+//        val fShader = glCreateShader(GL_FRAGMENT_SHADER).also {
+//            glShaderSource(it, File("src/main/resources/shaders/fragment.glsl").readText())
+//            glCompileShader(it)
+//        }
+//        shaderProgram = glCreateProgram().also {
+//            glAttachShader(it, vShader)
+//            glAttachShader(it, fShader)
+//            glLinkProgram(it)
+//        }
+//    }
 
     private fun loop() {
         while (!glfwWindowShouldClose(window)) {
             processInput()
-
+            update()
             // Update view matrix based on camera
             view.setLookAt(cameraPos, org.joml.Vector3f(cameraPos).add(cameraFront), cameraUp)
 
@@ -161,26 +239,89 @@ class Minecraft {
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, model.get(stack))
 
             glBindVertexArray(vao)
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0)
-
+            //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0)
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount)
             glfwSwapBuffers(window)
             glfwPollEvents()
         }
     }
 
+
     private fun processInput() {
-        val speed = 0.05f
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-            cameraPos.add(org.joml.Vector3f(cameraFront).mul(speed))
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-            cameraPos.sub(org.joml.Vector3f(cameraFront).mul(speed))
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-            cameraPos.sub(org.joml.Vector3f(cameraFront).cross(cameraUp).normalize().mul(speed))
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-            cameraPos.add(org.joml.Vector3f(cameraFront).cross(cameraUp).normalize().mul(speed))
+        val walkSpeed = 0.08f
+        val moveDir = org.joml.Vector3f(0f, 0f, 0f)
+
+        // Calculate forward/right vectors based only on Yaw (no flying up/down)
+        val forward = org.joml.Vector3f(cameraFront.x, 0f, cameraFront.z).normalize()
+        val right = org.joml.Vector3f(forward).cross(cameraUp).normalize()
+
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) moveDir.add(forward)
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) moveDir.sub(forward)
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) moveDir.sub(right)
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) moveDir.add(right)
+
+        if (moveDir.length() > 0) {
+            moveDir.normalize().mul(walkSpeed)
+            velocity.x = moveDir.x
+            velocity.z = moveDir.z
+        } else {
+            velocity.x = 0f
+            velocity.z = 0f
+        }
+
+        // Jump logic
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && isGrounded) {
+            velocity.y = jumpForce
+            isGrounded = false
+        }
+
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
             glfwSetWindowShouldClose(window, true)
     }
+
+
+    private fun update() {
+        // Apply gravity
+        velocity.y += gravity
+
+        // Resolve X
+        val nextX = org.joml.Vector3f(cameraPos).add(velocity.x, 0f, 0f)
+        if (!checkCollision(nextX)) {
+            cameraPos.x = nextX.x
+        }
+
+        // Resolve Z
+        val nextZ = org.joml.Vector3f(cameraPos).add(0f, 0f, velocity.z)
+        if (!checkCollision(nextZ)) {
+            cameraPos.z = nextZ.z
+        }
+
+        // Resolve Y (Vertical)
+        val nextY = org.joml.Vector3f(cameraPos).add(0f, velocity.y, 0f)
+        if (!checkCollision(nextY)) {
+            cameraPos.y = nextY.y
+            isGrounded = false
+        } else {
+            // If we hit something while falling, we are grounded
+            if (velocity.y < 0) isGrounded = true
+            velocity.y = 0f
+        }
+    }
+
+
+//    private fun processInput() {
+//        val speed = 0.05f
+//        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+//            cameraPos.add(org.joml.Vector3f(cameraFront).mul(speed))
+//        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+//            cameraPos.sub(org.joml.Vector3f(cameraFront).mul(speed))
+//        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+//            cameraPos.sub(org.joml.Vector3f(cameraFront).cross(cameraUp).normalize().mul(speed))
+//        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+//            cameraPos.add(org.joml.Vector3f(cameraFront).cross(cameraUp).normalize().mul(speed))
+//        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+//            glfwSetWindowShouldClose(window, true)
+//    }
 
     private fun init() {
         if (!glfwInit()) throw IllegalStateException("Unable to initialize GLFW")
@@ -240,8 +381,40 @@ class Minecraft {
         }
     }
 
+
+    private fun isSolid(x: Float, y: Float, z: Float): Boolean {
+        // Convert world coordinates to block coordinates
+        val bx = Math.floor(x.toDouble()).toInt()
+        val by = Math.floor(y.toDouble()).toInt()
+        val bz = Math.floor(z.toDouble()).toInt()
+
+        // Check if the block is within chunk bounds and is not AIR
+        return chunk.getBlock(bx, by, bz) != BlockType.AIR.id
+    }
+
+    private fun checkCollision(pos: org.joml.Vector3f): Boolean {
+        // Check multiple points around the player box to ensure they don't clip into corners
+        for (xOffset in listOf(-playerWidth, playerWidth)) {
+            for (zOffset in listOf(-playerWidth, playerWidth)) {
+                for (yOffset in listOf(0f, playerHeight)) { // Check feet and head
+                    if (isSolid(pos.x + xOffset, pos.y - yOffset, pos.z + zOffset)) return true
+                }
+            }
+        }
+        return false
+    }
+
+
     private fun cleanup() {
         glfwDestroyWindow(window)
         glfwTerminate()
     }
 }
+
+//
+//enum class BlockType(val id: Byte) {
+//    AIR(0),
+//    GRASS(1),
+//    DIRT(2),
+//    STONE(3)
+//}
