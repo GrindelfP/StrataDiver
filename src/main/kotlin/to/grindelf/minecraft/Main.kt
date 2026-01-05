@@ -21,6 +21,8 @@ class Minecraft {
 
     companion object {
         const val DAY_SPEED: Float = 0.2f
+        const val QUICK_DAY_SPEED: Float = 0.0174f
+        const val MINECRAFT_DAY_SPEED: Float = 0.0052f
     }
 
     private var window: Long = 0
