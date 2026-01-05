@@ -76,10 +76,14 @@ class Minecraft {
     // TEXTURES
     private var textureAtlasID: Int = 0
 
+    // MAP
+    private var mapVao: Int = 0
+
     fun run() {
         init()
         updateChunks() // Generates the 9x9 starting area
         setupSelectionBox()
+        setupMap()
         loop()
         cleanup()
     }
@@ -154,21 +158,15 @@ class Minecraft {
 
         while (!glfwWindowShouldClose(window)) {
             // 1. Celestial Timing
-            // Speed up or slow down time by changing the multiplier (0.2f is slow, 1.0f is fast)
             val time = glfwGetTime().toFloat() * DAY_SPEED
-
-            // Calculate Sun Position (Orbiting on the Y/Z plane)
             val sunDir = org.joml.Vector3f(
-                0.5f,                             // Fixed tilt so shadows aren't perfectly aligned
-                Math.sin(time.toDouble()).toFloat(), // Up/Down movement
-                Math.cos(time.toDouble()).toFloat()  // Forward/Backward movement
+                0.5f,
+                Math.sin(time.toDouble()).toFloat(),
+                Math.cos(time.toDouble()).toFloat()
             )
-
-            // Moon is directly opposite the Sun
             val moonDir = org.joml.Vector3f(sunDir).mul(-1f)
 
             // 2. Dynamic Sky Color
-            // Blend sky color from bright blue to dark navy based on Sun height (sunDir.y)
             val dayIntensity = Math.max(0.05f, sunDir.y)
             val skyR = 0.5f * dayIntensity
             val skyG = 0.8f * dayIntensity
@@ -185,6 +183,10 @@ class Minecraft {
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
             glUseProgram(shaderProgram)
 
+            // --- CRITICAL FIX: Reset isMap for the 3D World ---
+            val isMapLoc = glGetUniformLocation(shaderProgram, "isMap")
+            glUniform1i(isMapLoc, 0)
+
             // 5. Update Light Uniforms
             glUniform3f(glGetUniformLocation(shaderProgram, "sunDir"), sunDir.x, sunDir.y, sunDir.z)
             glUniform3f(glGetUniformLocation(shaderProgram, "moonDir"), moonDir.x, moonDir.y, moonDir.z)
@@ -200,7 +202,7 @@ class Minecraft {
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, view.get(stack))
 
             // 8. Render World Chunks
-            val modelMatrix = org.joml.Matrix4f() // Identity for chunks
+            val modelMatrix = org.joml.Matrix4f()
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, modelMatrix.get(stack))
 
             chunks.values.forEach { chunk ->
@@ -223,23 +225,37 @@ class Minecraft {
                 glDrawArrays(GL_LINES, 0, 24)
             }
 
-            // 10. Render UI (Crosshair)
-            glDisable(GL_DEPTH_TEST)
-            val identity = org.joml.Matrix4f()
-            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, identity.get(stack))
-            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, identity.get(stack))
-            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, identity.get(stack))
+            // --- 10. Render UI (Minimap) ---
+//            glDisable(GL_DEPTH_TEST)
+//
+//            // Prepare Minimap State
+//            glUniform1i(isMapLoc, 1) // Turn ON map mode
+//            glUniform2f(glGetUniformLocation(shaderProgram, "playerPos"), cameraPos.x, cameraPos.z)
+//            glUniform1f(glGetUniformLocation(shaderProgram, "mapZoom"), 50.0f)
+//
+//            // Use identity matrices for 2D UI overlay
+//            val identity = Matrix4f()
+//            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, identity.get(stack))
+//            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, identity.get(stack))
+//            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, identity.get(stack))
+//
+//            glBindVertexArray(mapVao)
+//            glDrawArrays(GL_TRIANGLES, 0, 6)
+
+            // --- 11. Render UI (Crosshair) ---
+            // Turn map mode OFF so crosshair doesn't get circular-masked or noise-colored
+            glUniform1i(isMapLoc, 0)
 
             glBindVertexArray(crosshairVao)
             glDrawArrays(GL_LINES, 0, 4)
+
             glEnable(GL_DEPTH_TEST)
 
-            // 11. Finalize Frame
+            // 12. Finalize Frame
             glfwSwapBuffers(window)
             glfwPollEvents()
         }
     }
-
 
     private fun processInput() {
         val walkSpeed = 0.08f
@@ -399,8 +415,14 @@ class Minecraft {
                     val lz = (result.blockPos.z % 16 + 16) % 16
 
                     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                        targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
-                        buildChunkMesh(targetChunk)
+                        val blockId = targetChunk.getBlock(lx, ly, lz)
+                        // Check if the block is NOT Bedrock before destroying
+                        if (blockId != BlockType.BEDROCK.id) {
+                            targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
+                            buildChunkMesh(targetChunk)
+                        } else {
+                            println("Bedrock is too hard to break!")
+                        }
                     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                         val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
                         val placeChunk = getChunkAt(placePos.x.toFloat(), placePos.z.toFloat())
@@ -608,7 +630,19 @@ class Minecraft {
                     tx == 0 && ty == 0 -> { r = 50; g = 110; b = 40 }   // Grass
                     tx == 1 && ty == 0 -> { r = 90; g = 60; b = 30 }    // Dirt
                     tx == 2 && ty == 0 -> { r = 100; g = 100; b = 100 } // Stone
-                    else -> { r = 120; g = 120; b = 120 }               // Default
+                    tx == 3 && ty == 0 -> {                             // Bedrock
+                        val darkNoise = (Math.random() * 30).toInt()
+                        r = (20 + darkNoise).toByte()
+                        g = (20 + darkNoise).toByte()
+                        b = (25 + darkNoise).toByte()
+                    }
+                    tx == 0 && ty == 1 -> {
+                        val barkNoise = (Math.random() * 15).toInt()
+                        r = (60 + barkNoise).toByte()
+                        g = (40 + barkNoise).toByte()
+                        b = (30 + barkNoise).toByte()
+                    }
+                    else -> { r = 120; g = 120; b = 120 }
                 }
 
                 // Add subtle noise so it's not a flat block of color
@@ -631,6 +665,39 @@ class Minecraft {
         return id
     }
 
+    private fun setupMap() {
+        val aspect = 1280f / 720f
+        val size = 0.4f // Size of the map
+        val offset = 0.05f // Margin from the edge
+
+        // We adjust the X coordinates by dividing by the aspect ratio
+        val right = (1.0f - offset) / aspect
+        val left = (1.0f - offset - size) / aspect
+        val top = 1.0f - offset
+        val bottom = 1.0f - offset - size
+
+        val vertices = floatArrayOf(
+            left,  top,    0f,   0f, 1f,
+            left,  bottom, 0f,   0f, 0f,
+            right, bottom, 0f,   1f, 0f,
+
+            left,  top,    0f,   0f, 1f,
+            right, bottom, 0f,   1f, 0f,
+            right, top,    0f,   1f, 1f
+        )
+
+        mapVao = glGenVertexArrays()
+        glBindVertexArray(mapVao)
+        val vbo = glGenBuffers()
+        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
+
+        val stride = 5 * 4
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
+        glEnableVertexAttribArray(1)
+    }
 
     private fun cleanup() {
         glfwDestroyWindow(window)

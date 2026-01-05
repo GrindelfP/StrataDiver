@@ -9,7 +9,9 @@ enum class BlockType(val id: Byte, val texX: Int, val texY: Int) {
     AIR(0, 0, 0),
     GRASS(1, 0, 0),
     DIRT(2, 1, 0),
-    STONE(3, 2, 0);
+    STONE(3, 2, 0),
+    BEDROCK(4, 3, 0),
+    WOOD(5, 0, 1);
 
     companion object {
         fun getById(id: Byte) = entries.find { it.id == id } ?: AIR
@@ -29,50 +31,42 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     var vertexCount: Int = 0
     var isMeshGenerated = false
 
-
-//    init {
-//        // Temporary generation: A flat layer of grass over dirt over stone
-//        for (x in 0 until SIZE) {
-//            for (z in 0 until SIZE) {
-//                for (y in 0 until SIZE) {
-//                    val blockType = when {
-//                        y == 7 -> BlockType.GRASS
-//                        y in 4..6 -> BlockType.DIRT
-//                        y < 4 -> BlockType.STONE
-//                        else -> BlockType.AIR
-//                    }
-//                    setBlock(x, y, z, blockType)
-//                }
-//            }
-//        }
-//    }
-
     init {
+        var treeSurfaceY = 10
+
         for (x in 0 until SIZE) {
             for (z in 0 until SIZE) {
-                // Global coordinates (needed for noise continuity across chunks later)
-                val worldX = (xOffset * SIZE + x).toFloat()
-                val worldZ = (zOffset * SIZE + z).toFloat()
+                val worldX = (this.xOffset * SIZE + x).toDouble()
+                val worldZ = (this.zOffset * SIZE + z).toDouble()
 
-                // Generate a height between 5 and 12
-                // We divide world coords by a "frequency" (20.0f) to make the hills wider
-                val noiseValue = FastNoise.getSmoothNoise(worldX / 20.0f, worldZ / 20.0f)
-                val surfaceHeight = 5 + ((noiseValue + 1f) * 4f).toInt()
+                val noise1 = PerlinNoise.noise(worldX * 0.02, 0.0, worldZ * 0.02) * 12.0
+                val noise2 = PerlinNoise.noise(worldX * 0.1, 11.0, worldZ * 0.1) * 3.0
+
+                val baseHeight = 10
+                val finalHeight = (baseHeight + noise1 + noise2).toInt().coerceIn(1, SIZE - 1)
+
+                // --- FIX: Capture the height at the center for the tree ---
+                if (x == 8 && z == 8) {
+                    treeSurfaceY = finalHeight
+                }
 
                 for (y in 0 until SIZE) {
-                    val blockType = when {
-                        y > surfaceHeight -> BlockType.AIR
-                        y == surfaceHeight -> BlockType.GRASS
-                        y > surfaceHeight - 3 -> BlockType.DIRT
+                    val block = when {
+                        y == 0 -> BlockType.BEDROCK
+                        y > finalHeight -> BlockType.AIR
+                        y == finalHeight -> BlockType.GRASS
+                        y > finalHeight - 3 -> BlockType.DIRT
                         else -> BlockType.STONE
                     }
-                    setBlock(x, y, z, blockType)
+                    setBlock(x, y, z, block)
                 }
             }
         }
-        // After generating land, let's try to add a tree!
-        if (Math.random() > 0.5) { // 5% chance per chunk for now
-            addSimpleTree(8, 8, 8) // Stick a tree in the middle if it's clear
+
+        // We only plant if the surface is within a reasonable range for this chunk
+        if (Math.random() < 0.1) { // 10% chance per chunk
+            // treeSurfaceY + 1 puts the first wood block ON TOP of the grass
+            addSimpleTree(8, treeSurfaceY + 1, 8)
         }
     }
 
@@ -92,15 +86,20 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 
 
     private fun addSimpleTree(tx: Int, ty: Int, tz: Int) {
-        // Trunk
+        // --- FIX 1: CHANGE TRUNK FROM STONE TO WOOD ---
         for (i in 0..4) {
-            if (ty + i < SIZE) setBlock(tx, ty + i, tz, BlockType.STONE) // Using stone as "wood" for now
+            if (ty + i < SIZE) {
+                setBlock(tx, ty + i, tz, BlockType.WOOD) // Was BlockType.STONE
+            }
         }
+
         // Leaves (a simple 3x3x3 cube of grass blocks)
         for (lx in -1..1) {
+            // Leaves start higher up the trunk
             for (ly in 3..5) {
                 for (lz in -1..1) {
                     if (tx + lx in 0 until SIZE && ty + ly in 0 until SIZE && tz + lz in 0 until SIZE) {
+                        // Only place leaves if the space is empty
                         if (getBlock(tx + lx, ty + ly, tz + lz) == BlockType.AIR.id) {
                             setBlock(tx + lx, ty + ly, tz + lz, BlockType.GRASS)
                         }
@@ -258,5 +257,52 @@ object FastNoise {
         val i1 = v1 * (1 - xf) + v2 * xf
         val i2 = v3 * (1 - xf) + v4 * xf
         return i1 * (1 - zf) + i2 * zf
+    }
+}
+
+
+object PerlinNoise {
+    private val P = IntArray(512)
+    private val PERMUTATION = intArrayOf(
+        151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
+        190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,
+        136,171,168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,
+        46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,
+        86,164,100,109,198,173,186,3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,
+        47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,
+        129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,
+        191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,
+        127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
+    )
+
+    init {
+        for (i in 0..255) P[i] = PERMUTATION[i].also { P[i + 256] = it }
+    }
+
+    private fun fade(t: Double) = t * t * t * (t * (t * 6 - 15) + 10)
+    private fun lerp(t: Double, a: Double, b: Double) = a + t * (b - a)
+    private fun grad(hash: Int, x: Double, y: Double, z: Double): Double {
+        val h = hash and 15
+        val u = if (h < 8) x else y
+        val v = if (h < 4) y else if (h == 12 || h == 14) x else z
+        return (if (h and 1 != 0) -u else u) + (if (h and 2 != 0) -v else v)
+    }
+
+    fun noise(x: Double, y: Double, z: Double): Double {
+        val xi = Math.floor(x).toInt() and 255
+        val yi = Math.floor(y).toInt() and 255
+        val zi = Math.floor(z).toInt() and 255
+        val xf = x - Math.floor(x)
+        val yf = y - Math.floor(y)
+        val zf = z - Math.floor(z)
+        val u = fade(xf); val v = fade(yf); val w = fade(zf)
+
+        val a = P[xi] + yi; val aa = P[a] + zi; val ab = P[a + 1] + zi
+        val b = P[xi + 1] + yi; val ba = P[b] + zi; val bb = P[b + 1] + zi
+
+        return lerp(w, lerp(v, lerp(u, grad(P[aa], xf, yf, zf), grad(P[ba], xf - 1, yf, zf)),
+            lerp(u, grad(P[ab], xf, yf - 1, zf), grad(P[bb], xf - 1, yf - 1, zf))),
+            lerp(v, lerp(u, grad(P[aa + 1], xf, yf, zf - 1), grad(P[ba + 1], xf - 1, yf, zf - 1)),
+                lerp(u, grad(P[ab + 1], xf, yf - 1, zf - 1), grad(P[bb + 1], xf - 1, yf - 1, zf - 1))))
     }
 }
