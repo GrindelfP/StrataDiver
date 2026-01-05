@@ -1,5 +1,8 @@
 package to.grindelf.minecraft
 
+import org.lwjgl.opengl.ARBVertexArrayObject.glDeleteVertexArrays
+import kotlin.math.floor
+
 
 // --- Block Definitions ---
 enum class BlockType(val id: Byte, val colorR: Float, val colorG: Float, val colorB: Float) {
@@ -22,20 +25,54 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     // 1D array to represent 3D space (x * size*size + y * size + z)
     private val blocks = ByteArray(SIZE * SIZE * SIZE)
 
+    var vao: Int = -1
+    var vertexCount: Int = 0
+    var isMeshGenerated = false
+
+
+//    init {
+//        // Temporary generation: A flat layer of grass over dirt over stone
+//        for (x in 0 until SIZE) {
+//            for (z in 0 until SIZE) {
+//                for (y in 0 until SIZE) {
+//                    val blockType = when {
+//                        y == 7 -> BlockType.GRASS
+//                        y in 4..6 -> BlockType.DIRT
+//                        y < 4 -> BlockType.STONE
+//                        else -> BlockType.AIR
+//                    }
+//                    setBlock(x, y, z, blockType)
+//                }
+//            }
+//        }
+//    }
+
     init {
-        // Temporary generation: A flat layer of grass over dirt over stone
         for (x in 0 until SIZE) {
             for (z in 0 until SIZE) {
+                // Global coordinates (needed for noise continuity across chunks later)
+                val worldX = (xOffset * SIZE + x).toFloat()
+                val worldZ = (zOffset * SIZE + z).toFloat()
+
+                // Generate a height between 5 and 12
+                // We divide world coords by a "frequency" (20.0f) to make the hills wider
+                val noiseValue = FastNoise.getSmoothNoise(worldX / 20.0f, worldZ / 20.0f)
+                val surfaceHeight = 5 + ((noiseValue + 1f) * 4f).toInt()
+
                 for (y in 0 until SIZE) {
                     val blockType = when {
-                        y == 7 -> BlockType.GRASS
-                        y in 4..6 -> BlockType.DIRT
-                        y < 4 -> BlockType.STONE
-                        else -> BlockType.AIR
+                        y > surfaceHeight -> BlockType.AIR
+                        y == surfaceHeight -> BlockType.GRASS
+                        y > surfaceHeight - 3 -> BlockType.DIRT
+                        else -> BlockType.STONE
                     }
                     setBlock(x, y, z, blockType)
                 }
             }
+        }
+        // After generating land, let's try to add a tree!
+        if (Math.random() > 0.5) { // 5% chance per chunk for now
+            addSimpleTree(8, 8, 8) // Stick a tree in the middle if it's clear
         }
     }
 
@@ -50,6 +87,33 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     fun setBlock(x: Int, y: Int, z: Int, type: BlockType) {
         if (x in 0 until SIZE && y in 0 until SIZE && z in 0 until SIZE) {
             blocks[x * SIZE * SIZE + y * SIZE + z] = type.id
+        }
+    }
+
+
+    private fun addSimpleTree(tx: Int, ty: Int, tz: Int) {
+        // Trunk
+        for (i in 0..4) {
+            if (ty + i < SIZE) setBlock(tx, ty + i, tz, BlockType.STONE) // Using stone as "wood" for now
+        }
+        // Leaves (a simple 3x3x3 cube of grass blocks)
+        for (lx in -1..1) {
+            for (ly in 3..5) {
+                for (lz in -1..1) {
+                    if (tx+lx in 0 until SIZE && ty+ly in 0 until SIZE && tz+lz in 0 until SIZE) {
+                        if (getBlock(tx+lx, ty+ly, tz+lz) == BlockType.AIR.id) {
+                            setBlock(tx+lx, ty+ly, tz+lz, BlockType.GRASS)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun cleanup() {
+        if (vao != -1) {
+            glDeleteVertexArrays(vao)
+            isMeshGenerated = false
         }
     }
 }
@@ -170,5 +234,32 @@ object MeshGenerator {
         addVertex(v, x + 1f, y, z + 1f, bt)
         addVertex(v, x + 1f, y, z, bt)
         addVertex(v, x + 1f, y + 1f, z, bt)
+    }
+}
+
+object FastNoise {
+    fun getNoise(x: Int, z: Int): Float {
+        // A very simple pseudo-random noise function for demo purposes
+        // In a real project, you'd use a dedicated library like JoNoise or Simplex
+        val n = x * 45 + z * 13
+        val res = (n shl 13) xor n
+        return (1.0f - ((res * (res * res * 15731 + 789221) + 1376312589) and 0x7fffffff).toFloat() / 1073741824.0f)
+    }
+
+    fun getSmoothNoise(x: Float, z: Float): Float {
+        // Simple bilinear interpolation between noise points
+        val xi = floor(x).toInt()
+        val zi = floor(z).toInt()
+        val xf = x - xi
+        val zf = z - zi
+
+        val v1 = getNoise(xi, zi)
+        val v2 = getNoise(xi + 1, zi)
+        val v3 = getNoise(xi, zi + 1)
+        val v4 = getNoise(xi + 1, zi + 1)
+
+        val i1 = v1 * (1 - xf) + v2 * xf
+        val i2 = v3 * (1 - xf) + v4 * xf
+        return i1 * (1 - zf) + i2 * zf
     }
 }
