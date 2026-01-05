@@ -152,10 +152,6 @@ object MeshGenerator {
         return vertices.toFloatArray()
     }
 
-    private fun addVertex(list: MutableList<Float>, x: Float, y: Float, z: Float, u: Float, v: Float) {
-        list.add(x); list.add(y); list.add(z) // Position
-        list.add(u); list.add(v)             // UV Coordinates
-    }
 
     private fun getUVs(bt: BlockType): FloatArray {
         val uMin = bt.texX / ATLAS_SIZE
@@ -165,64 +161,76 @@ object MeshGenerator {
         return floatArrayOf(uMin, vMin, uMax, vMax)
     }
 
+    private fun addVertex(list: MutableList<Float>, x: Float, y: Float, z: Float, u: Float, v: Float, nx: Float, ny: Float, nz: Float) {
+        list.add(x); list.add(y); list.add(z) // Position (3 floats)
+        list.add(u); list.add(v)             // UV (2 floats)
+        list.add(nx); list.add(ny); list.add(nz) // Normals (3 floats)
+    }
+
     private fun addFaceTop(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
         val (uMin, vMin, uMax, vMax) = getUVs(bt)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMin)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMin)
-        addVertex(v, x, y + 1f, z, uMin, vMin)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
+        val nx = 0f; val ny = 1f; val nz = 0f // Facing Up
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMin, nx, ny, nz)
+        addVertex(v, x, y + 1f, z, uMin, vMin, nx, ny, nz)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
     }
 
     private fun addFaceBottom(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
         val (uMin, vMin, uMax, vMax) = getUVs(bt)
-        addVertex(v, x, y, z, uMin, vMin)
-        addVertex(v, x + 1f, y, z, uMax, vMin)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMax)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMax)
-        addVertex(v, x, y, z + 1f, uMin, vMax)
-        addVertex(v, x, y, z, uMin, vMin)
+        val nx = 0f; val ny = -1f; val nz = 0f // Facing Down
+        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y, z, uMax, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMax, nx, ny, nz)
+        addVertex(v, x, y, z + 1f, uMin, vMax, nx, ny, nz)
+        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
     }
 
     private fun addFaceNorth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
         val (uMin, vMin, uMax, vMax) = getUVs(bt)
-        addVertex(v, x + 1f, y + 1f, z, uMin, vMax)
-        addVertex(v, x + 1f, y, z, uMin, vMin)
-        addVertex(v, x, y, z, uMax, vMin)
-        addVertex(v, x, y, z, uMax, vMin)
-        addVertex(v, x, y + 1f, z, uMax, vMax)
-        addVertex(v, x + 1f, y + 1f, z, uMin, vMax)
+        val nx = 0f; val ny = 0f; val nz = -1f // Facing North (-Z)
+        addVertex(v, x + 1f, y + 1f, z, uMin, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y, z, uMin, vMin, nx, ny, nz)
+        addVertex(v, x, y, z, uMax, vMin, nx, ny, nz)
+        addVertex(v, x, y, z, uMax, vMin, nx, ny, nz)
+        addVertex(v, x, y + 1f, z, uMax, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z, uMin, vMax, nx, ny, nz)
     }
 
     private fun addFaceSouth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
         val (uMin, vMin, uMax, vMax) = getUVs(bt)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
-        addVertex(v, x, y, z + 1f, uMin, vMin)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMin)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMin)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
+        val nx = 0f; val ny = 0f; val nz = 1f // Facing South (+Z)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
+        addVertex(v, x, y, z + 1f, uMin, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
     }
 
     private fun addFaceWest(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
         val (uMin, vMin, uMax, vMax) = getUVs(bt)
-        addVertex(v, x, y + 1f, z + 1f, uMax, vMax)
-        addVertex(v, x, y + 1f, z, uMin, vMax)
-        addVertex(v, x, y, z, uMin, vMin)
-        addVertex(v, x, y, z, uMin, vMin)
-        addVertex(v, x, y, z + 1f, uMax, vMin)
-        addVertex(v, x, y + 1f, z + 1f, uMax, vMax)
+        val nx = -1f; val ny = 0f; val nz = 0f // Facing West (-X)
+        addVertex(v, x, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
+        addVertex(v, x, y + 1f, z, uMin, vMax, nx, ny, nz)
+        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
+        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
+        addVertex(v, x, y, z + 1f, uMax, vMin, nx, ny, nz)
+        addVertex(v, x, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
     }
 
     private fun addFaceEast(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
         val (uMin, vMin, uMax, vMax) = getUVs(bt)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMax)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax)
-        addVertex(v, x + 1f, y, z + 1f, uMin, vMin)
-        addVertex(v, x + 1f, y, z + 1f, uMin, vMin)
-        addVertex(v, x + 1f, y, z, uMax, vMin)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMax)
+        val nx = 1f; val ny = 0f; val nz = 0f // Facing East (+X)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y, z + 1f, uMin, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y, z + 1f, uMin, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y, z, uMax, vMin, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMax, nx, ny, nz)
     }
 }
 

@@ -154,6 +154,9 @@ class Minecraft {
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
             glUseProgram(shaderProgram)
 
+            val sunDirLoc = glGetUniformLocation(shaderProgram, "sunDir")
+            glUniform3f(sunDirLoc, 0.5f, 1.0f, 0.3f)
+
             // 1. Texture Binding (Once per frame)
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, textureAtlasID)
@@ -526,7 +529,8 @@ class Minecraft {
 
     private fun buildChunkMesh(c: Chunk) {
         val vertices = MeshGenerator.generateChunkMesh(c)
-        c.vertexCount = vertices.size / 5 // Updated to 5!
+        // IMPORTANT: Now using 8 floats per vertex (Pos:3, UV:2, Normal:3)
+        c.vertexCount = vertices.size / 8
 
         c.vao = glGenVertexArrays()
         glBindVertexArray(c.vao)
@@ -534,16 +538,22 @@ class Minecraft {
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
 
-        val stride = 5 * 4 // 5 floats * 4 bytes each
+        // Stride is 8 floats * 4 bytes = 32 bytes
+        val stride = 8 * 4
 
-        // Position: Location 0, Size 3 (X, Y, Z)
+        // 1. Position: Location 0, Size 3
         glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
         glEnableVertexAttribArray(0)
 
-        // Texture UV: Location 1, Size 2 (U, V)
-        // Starts after 3 floats (12 bytes)
+        // 2. Texture UV: Location 1, Size 2
+        // Offset: starts after 3 position floats (12 bytes)
         glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, (3 * 4).toLong())
         glEnableVertexAttribArray(1)
+
+        // 3. Normals: Location 2, Size 3
+        // Offset: starts after 3 pos + 2 UV floats (20 bytes)
+        glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, (5 * 4).toLong())
+        glEnableVertexAttribArray(2)
 
         c.isMeshGenerated = true
     }
