@@ -18,6 +18,11 @@ fun main() {
 
 
 class Minecraft {
+
+    companion object {
+        const val DAY_SPEED: Float = 0.2f
+    }
+
     private var window: Long = 0
     private var shaderProgram: Int = 0
     private var vao: Int = 0
@@ -146,29 +151,54 @@ class Minecraft {
         val stack = BufferUtils.createFloatBuffer(16)
 
         while (!glfwWindowShouldClose(window)) {
+            // 1. Celestial Timing
+            // Speed up or slow down time by changing the multiplier (0.2f is slow, 1.0f is fast)
+            val time = glfwGetTime().toFloat() * DAY_SPEED
+
+            // Calculate Sun Position (Orbiting on the Y/Z plane)
+            val sunDir = org.joml.Vector3f(
+                0.5f,                             // Fixed tilt so shadows aren't perfectly aligned
+                Math.sin(time.toDouble()).toFloat(), // Up/Down movement
+                Math.cos(time.toDouble()).toFloat()  // Forward/Backward movement
+            )
+
+            // Moon is directly opposite the Sun
+            val moonDir = org.joml.Vector3f(sunDir).mul(-1f)
+
+            // 2. Dynamic Sky Color
+            // Blend sky color from bright blue to dark navy based on Sun height (sunDir.y)
+            val dayIntensity = Math.max(0.05f, sunDir.y)
+            val skyR = 0.5f * dayIntensity
+            val skyG = 0.8f * dayIntensity
+            val skyB = 1.0f * (dayIntensity + 0.1f)
+            glClearColor(skyR, skyG, skyB, 1.0f)
+
+            // 3. Logic & Physics Updates
             processInput()
             update()
             updateChunks()
             selectedBlock = raycast()
 
+            // 4. Start Rendering
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
             glUseProgram(shaderProgram)
 
-            val sunDirLoc = glGetUniformLocation(shaderProgram, "sunDir")
-            glUniform3f(sunDirLoc, 0.5f, 1.0f, 0.3f)
+            // 5. Update Light Uniforms
+            glUniform3f(glGetUniformLocation(shaderProgram, "sunDir"), sunDir.x, sunDir.y, sunDir.z)
+            glUniform3f(glGetUniformLocation(shaderProgram, "moonDir"), moonDir.x, moonDir.y, moonDir.z)
 
-            // 1. Texture Binding (Once per frame)
+            // 6. Texture Binding
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, textureAtlasID)
             glUniform1i(glGetUniformLocation(shaderProgram, "textureAtlas"), 0)
 
-            // 2. Camera Matrices
+            // 7. Update Camera Matrices
             view.setLookAt(cameraPos, org.joml.Vector3f(cameraPos).add(cameraFront), cameraUp)
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, projection.get(stack))
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, view.get(stack))
 
-            // 3. Render Chunks
-            val modelMatrix = org.joml.Matrix4f() // Identity for world-space chunks
+            // 8. Render World Chunks
+            val modelMatrix = org.joml.Matrix4f() // Identity for chunks
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, modelMatrix.get(stack))
 
             chunks.values.forEach { chunk ->
@@ -178,7 +208,7 @@ class Minecraft {
                 }
             }
 
-            // 4. Selection Highlight
+            // 9. Render Selection Box
             if (selectedBlock != null) {
                 glLineWidth(2.0f)
                 val bPos = selectedBlock!!.blockPos
@@ -191,7 +221,7 @@ class Minecraft {
                 glDrawArrays(GL_LINES, 0, 24)
             }
 
-            // 5. Crosshair (UI)
+            // 10. Render UI (Crosshair)
             glDisable(GL_DEPTH_TEST)
             val identity = org.joml.Matrix4f()
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, identity.get(stack))
@@ -202,6 +232,7 @@ class Minecraft {
             glDrawArrays(GL_LINES, 0, 4)
             glEnable(GL_DEPTH_TEST)
 
+            // 11. Finalize Frame
             glfwSwapBuffers(window)
             glfwPollEvents()
         }

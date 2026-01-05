@@ -5,21 +5,26 @@ in vec2 TexCoord;
 in vec3 Normal;
 
 uniform sampler2D textureAtlas;
-uniform vec3 sunDir; // Direction of the sun
+uniform vec3 sunDir;
+uniform vec3 moonDir;
 
 void main() {
     vec4 texColor = texture(textureAtlas, TexCoord);
     if(texColor.a < 0.1) discard;
 
-    // 1. Ambient light (so shadows aren't pitch black)
-    float ambient = 0.3;
+    vec3 norm = normalize(Normal);
 
-    // 2. Diffuse light (The Sun)
-    // We use dot product to see how aligned the face is with the sun
-    float diff = max(dot(Normal, normalize(sunDir)), 0.0);
+    // 1. Ambient: Very dim base light so nights aren't pitch black
+    float ambient = 0.15;
 
-    // Combine them (limit to 1.0 max brightness)
-    float light = min(ambient + diff, 1.0);
+    // 2. Sun Light (Yellowish)
+    float sunDiff = max(dot(norm, normalize(sunDir)), 0.0);
+    vec3 sunColor = sunDiff * vec3(1.0, 0.9, 0.8);
 
-    FragColor = vec4(texColor.rgb * light, texColor.a);
+    // 3. Moon Light (Blueish/Dim)
+    float moonDiff = max(dot(norm, normalize(moonDir)), 0.0);
+    vec3 moonColor = moonDiff * vec3(0.2, 0.3, 0.5);
+
+    vec3 finalLight = min(vec3(ambient) + sunColor + moonColor, vec3(1.0));
+    FragColor = vec4(texColor.rgb * finalLight, texColor.a);
 }
