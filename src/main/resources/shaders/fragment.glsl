@@ -1,7 +1,10 @@
 #version 330 core
-in vec3 vertexColor;
 out vec4 FragColor;
+in vec2 TexCoord;
+uniform sampler2D textureAtlas;
 
 void main() {
-    FragColor = vec4(vertexColor, 1.0);
+    vec4 texColor = texture(textureAtlas, TexCoord);
+    if(texColor.a < 0.1) discard; // Transparency for crosshair/leaves
+    FragColor = texColor;
 }

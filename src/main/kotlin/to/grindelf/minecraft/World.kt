@@ -5,11 +5,11 @@ import kotlin.math.floor
 
 
 // --- Block Definitions ---
-enum class BlockType(val id: Byte, val colorR: Float, val colorG: Float, val colorB: Float) {
-    AIR(0, 0f, 0f, 0f),
-    GRASS(1, 0.2f, 0.7f, 0.2f),
-    DIRT(2, 0.5f, 0.3f, 0.2f),
-    STONE(3, 0.4f, 0.4f, 0.4f);
+enum class BlockType(val id: Byte, val texX: Int, val texY: Int) {
+    AIR(0, 0, 0),
+    GRASS(1, 0, 0),
+    DIRT(2, 1, 0),
+    STONE(3, 2, 0);
 
     companion object {
         fun getById(id: Byte) = entries.find { it.id == id } ?: AIR
@@ -100,9 +100,9 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
         for (lx in -1..1) {
             for (ly in 3..5) {
                 for (lz in -1..1) {
-                    if (tx+lx in 0 until SIZE && ty+ly in 0 until SIZE && tz+lz in 0 until SIZE) {
-                        if (getBlock(tx+lx, ty+ly, tz+lz) == BlockType.AIR.id) {
-                            setBlock(tx+lx, ty+ly, tz+lz, BlockType.GRASS)
+                    if (tx + lx in 0 until SIZE && ty + ly in 0 until SIZE && tz + lz in 0 until SIZE) {
+                        if (getBlock(tx + lx, ty + ly, tz + lz) == BlockType.AIR.id) {
+                            setBlock(tx + lx, ty + ly, tz + lz, BlockType.GRASS)
                         }
                     }
                 }
@@ -122,6 +122,8 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 // --- The Face Culling Mesh Generator ---
 object MeshGenerator {
 
+    private const val ATLAS_SIZE = 4.0f // 4x4 tiles in our generated texture
+
     fun generateChunkMesh(chunk: Chunk): FloatArray {
         val vertices = mutableListOf<Float>()
         val size = Chunk.SIZE
@@ -133,107 +135,94 @@ object MeshGenerator {
                     if (blockId == BlockType.AIR.id) continue
 
                     val blockType = BlockType.getById(blockId)
-                    // Calculate global coordinates for the block
                     val gx = (chunk.xOffset * size + x).toFloat()
                     val gy = (chunk.yOffset * size + y).toFloat()
                     val gz = (chunk.zOffset * size + z).toFloat()
 
-                    // --- FACE CULLING LOGIC ---
-                    // Check neighbors. If neighbor is AIR, draw the face.
-
-                    // Top (+Y)
-                    if (chunk.getBlock(x, y + 1, z) == BlockType.AIR.id) {
-                        addFaceTop(vertices, gx, gy, gz, blockType)
-                    }
-                    // Bottom (-Y)
-                    if (chunk.getBlock(x, y - 1, z) == BlockType.AIR.id) {
-                        addFaceBottom(vertices, gx, gy, gz, blockType)
-                    }
-                    // North (-Z)
-                    if (chunk.getBlock(x, y, z - 1) == BlockType.AIR.id) {
-                        addFaceNorth(vertices, gx, gy, gz, blockType)
-                    }
-                    // South (+Z)
-                    if (chunk.getBlock(x, y, z + 1) == BlockType.AIR.id) {
-                        addFaceSouth(vertices, gx, gy, gz, blockType)
-                    }
-                    // West (-X)
-                    if (chunk.getBlock(x - 1, y, z) == BlockType.AIR.id) {
-                        addFaceWest(vertices, gx, gy, gz, blockType)
-                    }
-                    // East (+X)
-                    if (chunk.getBlock(x + 1, y, z) == BlockType.AIR.id) {
-                        addFaceEast(vertices, gx, gy, gz, blockType)
-                    }
+                    // --- FACE CULLING ---
+                    if (chunk.getBlock(x, y + 1, z) == BlockType.AIR.id) addFaceTop(vertices, gx, gy, gz, blockType)
+                    if (chunk.getBlock(x, y - 1, z) == BlockType.AIR.id) addFaceBottom(vertices, gx, gy, gz, blockType)
+                    if (chunk.getBlock(x, y, z - 1) == BlockType.AIR.id) addFaceNorth(vertices, gx, gy, gz, blockType)
+                    if (chunk.getBlock(x, y, z + 1) == BlockType.AIR.id) addFaceSouth(vertices, gx, gy, gz, blockType)
+                    if (chunk.getBlock(x - 1, y, z) == BlockType.AIR.id) addFaceWest(vertices, gx, gy, gz, blockType)
+                    if (chunk.getBlock(x + 1, y, z) == BlockType.AIR.id) addFaceEast(vertices, gx, gy, gz, blockType)
                 }
             }
         }
         return vertices.toFloatArray()
     }
 
-    // Helper to add a single vertex (Position + Color)
-    private fun addVertex(list: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        // Position
-        list.add(x); list.add(y); list.add(z)
-        // Color (a little randomized for texture)
-        val shade = (Math.random() * 0.1f).toFloat()
-        list.add(bt.colorR + shade); list.add(bt.colorG + shade); list.add(bt.colorB + shade)
+    private fun addVertex(list: MutableList<Float>, x: Float, y: Float, z: Float, u: Float, v: Float) {
+        list.add(x); list.add(y); list.add(z) // Position
+        list.add(u); list.add(v)             // UV Coordinates
     }
 
-    // --- The 6 Face implementations (2 triangles each) ---
+    private fun getUVs(bt: BlockType): FloatArray {
+        val uMin = bt.texX / ATLAS_SIZE
+        val vMin = bt.texY / ATLAS_SIZE
+        val uMax = (bt.texX + 1) / ATLAS_SIZE
+        val vMax = (bt.texY + 1) / ATLAS_SIZE
+        return floatArrayOf(uMin, vMin, uMax, vMax)
+    }
 
     private fun addFaceTop(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        addVertex(v, x, y + 1f, z + 1f, bt)
-        addVertex(v, x + 1f, y + 1f, z + 1f, bt)
-        addVertex(v, x + 1f, y + 1f, z, bt)
-        addVertex(v, x + 1f, y + 1f, z, bt)
-        addVertex(v, x, y + 1f, z, bt)
-        addVertex(v, x, y + 1f, z + 1f, bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMin)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMin)
+        addVertex(v, x, y + 1f, z, uMin, vMin)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
     }
 
     private fun addFaceBottom(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        addVertex(v, x, y, z, bt)
-        addVertex(v, x + 1f, y, z, bt)
-        addVertex(v, x + 1f, y, z + 1f, bt)
-        addVertex(v, x + 1f, y, z + 1f, bt)
-        addVertex(v, x, y, z + 1f, bt)
-        addVertex(v, x, y, z, bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        addVertex(v, x, y, z, uMin, vMin)
+        addVertex(v, x + 1f, y, z, uMax, vMin)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMax)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMax)
+        addVertex(v, x, y, z + 1f, uMin, vMax)
+        addVertex(v, x, y, z, uMin, vMin)
     }
 
     private fun addFaceNorth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        addVertex(v, x + 1f, y + 1f, z, bt)
-        addVertex(v, x + 1f, y, z, bt)
-        addVertex(v, x, y, z, bt)
-        addVertex(v, x, y, z, bt)
-        addVertex(v, x, y + 1f, z, bt)
-        addVertex(v, x + 1f, y + 1f, z, bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        addVertex(v, x + 1f, y + 1f, z, uMin, vMax)
+        addVertex(v, x + 1f, y, z, uMin, vMin)
+        addVertex(v, x, y, z, uMax, vMin)
+        addVertex(v, x, y, z, uMax, vMin)
+        addVertex(v, x, y + 1f, z, uMax, vMax)
+        addVertex(v, x + 1f, y + 1f, z, uMin, vMax)
     }
 
     private fun addFaceSouth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        addVertex(v, x, y + 1f, z + 1f, bt)
-        addVertex(v, x, y, z + 1f, bt)
-        addVertex(v, x + 1f, y, z + 1f, bt)
-        addVertex(v, x + 1f, y, z + 1f, bt)
-        addVertex(v, x + 1f, y + 1f, z + 1f, bt)
-        addVertex(v, x, y + 1f, z + 1f, bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
+        addVertex(v, x, y, z + 1f, uMin, vMin)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMin)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMin)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax)
     }
 
     private fun addFaceWest(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        addVertex(v, x, y + 1f, z + 1f, bt)
-        addVertex(v, x, y + 1f, z, bt)
-        addVertex(v, x, y, z, bt)
-        addVertex(v, x, y, z, bt)
-        addVertex(v, x, y, z + 1f, bt)
-        addVertex(v, x, y + 1f, z + 1f, bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        addVertex(v, x, y + 1f, z + 1f, uMax, vMax)
+        addVertex(v, x, y + 1f, z, uMin, vMax)
+        addVertex(v, x, y, z, uMin, vMin)
+        addVertex(v, x, y, z, uMin, vMin)
+        addVertex(v, x, y, z + 1f, uMax, vMin)
+        addVertex(v, x, y + 1f, z + 1f, uMax, vMax)
     }
 
     private fun addFaceEast(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        addVertex(v, x + 1f, y + 1f, z, bt)
-        addVertex(v, x + 1f, y + 1f, z + 1f, bt)
-        addVertex(v, x + 1f, y, z + 1f, bt)
-        addVertex(v, x + 1f, y, z + 1f, bt)
-        addVertex(v, x + 1f, y, z, bt)
-        addVertex(v, x + 1f, y + 1f, z, bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMax)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax)
+        addVertex(v, x + 1f, y, z + 1f, uMin, vMin)
+        addVertex(v, x + 1f, y, z + 1f, uMin, vMin)
+        addVertex(v, x + 1f, y, z, uMax, vMin)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMax)
     }
 }
 

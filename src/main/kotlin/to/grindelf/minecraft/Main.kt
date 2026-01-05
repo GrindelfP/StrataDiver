@@ -8,7 +8,6 @@ import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL20.*
 import org.lwjgl.opengl.GL30.glBindVertexArray
 import org.lwjgl.opengl.GL30.glGenVertexArrays
-import org.lwjgl.system.MemoryStack
 import org.lwjgl.system.MemoryUtil.NULL
 import java.io.File
 
@@ -66,6 +65,9 @@ class Minecraft {
 
     // Inventory: BlockType ID -> Count
     private val inventory = mutableMapOf<Byte, Int>()
+
+    // TEXTURES
+    private var textureAtlasID: Int = 0
 
     fun run() {
         init()
@@ -139,130 +141,44 @@ class Minecraft {
         glDeleteShader(fShader)
     }
 
-//    private fun setupCube() {
-//        val vertices = floatArrayOf(
-//            // Positions            // Colors (R, G, B)
-//            -0.5f, -0.5f, -0.5f, 0.2f, 0.2f, 0.2f, // Back face
-//            0.5f, -0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
-//            0.5f, 0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
-//            -0.5f, 0.5f, -0.5f, 0.2f, 0.2f, 0.2f,
-//
-//            -0.5f, -0.5f, 0.5f, 0.8f, 0.8f, 0.8f, // Front face
-//            0.5f, -0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
-//            0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
-//            -0.5f, 0.5f, 0.5f, 0.8f, 0.8f, 0.8f,
-//
-//            -0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, // Left face
-//            -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
-//            -0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
-//            -0.5f, -0.5f, 0.5f, 0.5f, 0.5f, 0.5f,
-//
-//            0.5f, 0.5f, 0.5f, 0.6f, 0.6f, 0.6f, // Right face
-//            0.5f, 0.5f, -0.5f, 0.6f, 0.6f, 0.6f,
-//            0.5f, -0.5f, -0.5f, 0.6f, 0.6f, 0.6f,
-//            0.5f, -0.5f, 0.5f, 0.6f, 0.6f, 0.6f,
-//
-//            -0.5f, -0.5f, -0.5f, 0.3f, 0.3f, 0.3f, // Bottom face
-//            0.5f, -0.5f, -0.5f, 0.3f, 0.3f, 0.3f,
-//            0.5f, -0.5f, 0.5f, 0.3f, 0.3f, 0.3f,
-//            -0.5f, -0.5f, 0.5f, 0.3f, 0.3f, 0.3f,
-//
-//            -0.5f, 0.5f, -0.5f, 0.9f, 0.9f, 0.9f, // Top face
-//            0.5f, 0.5f, -0.5f, 0.9f, 0.9f, 0.9f,
-//            0.5f, 0.5f, 0.5f, 0.9f, 0.9f, 0.9f,
-//            -0.5f, 0.5f, 0.5f, 0.9f, 0.9f, 0.9f
-//        )
-//
-//        val indices = intArrayOf(
-//            0, 1, 2, 2, 3, 0,       // Back
-//            4, 5, 6, 6, 7, 4,       // Front
-//            8, 9, 10, 10, 11, 8,    // Left
-//            12, 13, 14, 14, 15, 12, // Right
-//            16, 17, 18, 18, 19, 16, // Bottom
-//            20, 21, 22, 22, 23, 20  // Top
-//        )
-//
-//        // Generate VAO and VBO (Standard OpenGL boilerplate)
-//        vao = glGenVertexArrays()
-//        val vbo = glGenBuffers()
-//        val ebo = glGenBuffers()
-//
-//        glBindVertexArray(vao)
-//
-//        glBindBuffer(GL_ARRAY_BUFFER, vbo)
-//        glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
-//
-//        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
-//        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices, GL_STATIC_DRAW)
-//
-//        // Position attribute
-//        glVertexAttribPointer(0, 3, GL_FLOAT, false, 6 * 4, 0)
-//        glEnableVertexAttribArray(0)
-//        // Color attribute
-//        glVertexAttribPointer(1, 3, GL_FLOAT, false, 6 * 4, (3 * 4).toLong())
-//        glEnableVertexAttribArray(1)
-//
-//        // Load Shaders (Simplified loader)
-//        val vShader = glCreateShader(GL_VERTEX_SHADER).also {
-//            glShaderSource(it, File("src/main/resources/shaders/vertex.glsl").readText())
-//            glCompileShader(it)
-//        }
-//        val fShader = glCreateShader(GL_FRAGMENT_SHADER).also {
-//            glShaderSource(it, File("src/main/resources/shaders/fragment.glsl").readText())
-//            glCompileShader(it)
-//        }
-//        shaderProgram = glCreateProgram().also {
-//            glAttachShader(it, vShader)
-//            glAttachShader(it, fShader)
-//            glLinkProgram(it)
-//        }
-//    }
 
     private fun loop() {
         val stack = BufferUtils.createFloatBuffer(16)
 
         while (!glfwWindowShouldClose(window)) {
-            // 1. Logic Updates
             processInput()
             update()
-            updateChunks() // Ensure the world generates around the player
-
-            // 2. Physics/Interaction Updates
+            updateChunks()
             selectedBlock = raycast()
 
-            // 3. Prepare for Rendering
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
             glUseProgram(shaderProgram)
 
-            // 4. Update Global Matrices (View & Projection)
-            // This makes the camera follow your yaw, pitch, and position
-            view.setLookAt(
-                cameraPos,
-                org.joml.Vector3f(cameraPos).add(cameraFront),
-                cameraUp
-            )
+            // 1. Texture Binding (Once per frame)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, textureAtlasID)
+            glUniform1i(glGetUniformLocation(shaderProgram, "textureAtlas"), 0)
 
+            // 2. Camera Matrices
+            view.setLookAt(cameraPos, org.joml.Vector3f(cameraPos).add(cameraFront), cameraUp)
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, projection.get(stack))
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, view.get(stack))
 
-            // 5. Render World Chunks
+            // 3. Render Chunks
+            val modelMatrix = org.joml.Matrix4f() // Identity for world-space chunks
+            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, modelMatrix.get(stack))
+
             chunks.values.forEach { chunk ->
                 if (chunk.isMeshGenerated) {
-                    // Since our MeshGenerator uses world-space coordinates,
-                    // the model matrix for chunks is simply the Identity matrix.
-                    val modelMatrix = org.joml.Matrix4f()
-                    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, modelMatrix.get(stack))
-
                     glBindVertexArray(chunk.vao)
                     glDrawArrays(GL_TRIANGLES, 0, chunk.vertexCount)
                 }
             }
 
-            // 6. Render Selection Box (Highlighting the block you look at)
+            // 4. Selection Highlight
             if (selectedBlock != null) {
                 glLineWidth(2.0f)
                 val bPos = selectedBlock!!.blockPos
-                // Slightly scale up to prevent "Z-fighting" (flickering) against the block face
                 val selectionModel = org.joml.Matrix4f()
                     .translation(bPos.x.toFloat(), bPos.y.toFloat(), bPos.z.toFloat())
                     .scale(1.005f)
@@ -272,10 +188,8 @@ class Minecraft {
                 glDrawArrays(GL_LINES, 0, 24)
             }
 
-            // 7. Render UI (Crosshair)
-            glDisable(GL_DEPTH_TEST) // Draw over everything
-
-            // Reset matrices to Identity for 2D screen-space drawing
+            // 5. Crosshair (UI)
+            glDisable(GL_DEPTH_TEST)
             val identity = org.joml.Matrix4f()
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, identity.get(stack))
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, identity.get(stack))
@@ -283,10 +197,8 @@ class Minecraft {
 
             glBindVertexArray(crosshairVao)
             glDrawArrays(GL_LINES, 0, 4)
+            glEnable(GL_DEPTH_TEST)
 
-            glEnable(GL_DEPTH_TEST) // Re-enable for the next frame
-
-            // 8. Swap and Poll
             glfwSwapBuffers(window)
             glfwPollEvents()
         }
@@ -355,28 +267,12 @@ class Minecraft {
     }
 
 
-//    private fun processInput() {
-//        val speed = 0.05f
-//        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-//            cameraPos.add(org.joml.Vector3f(cameraFront).mul(speed))
-//        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-//            cameraPos.sub(org.joml.Vector3f(cameraFront).mul(speed))
-//        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-//            cameraPos.sub(org.joml.Vector3f(cameraFront).cross(cameraUp).normalize().mul(speed))
-//        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-//            cameraPos.add(org.joml.Vector3f(cameraFront).cross(cameraUp).normalize().mul(speed))
-//        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-//            glfwSetWindowShouldClose(window, true)
-//    }
-
     private fun init() {
         if (!glfwInit()) throw IllegalStateException("Unable to initialize GLFW")
 
         glfwDefaultWindowHints()
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE)
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE)
-
-        // macOS specific hint for Apple Silicon
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3)
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3)
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
@@ -389,14 +285,22 @@ class Minecraft {
         glfwSwapInterval(1)
         glfwShowWindow(window)
 
+        // CRITICAL: Initialize LWJGL capabilities before calling ANY gl... functions
         GL.createCapabilities()
 
-        GL.createCapabilities()
+        // Now it is safe to call OpenGL functions
+        textureAtlasID = generateProceduralTexture()
+
         glClearColor(0.5f, 0.8f, 1.0f, 1.0f)
         glEnable(GL_DEPTH_TEST)
+
+        // Transparent UI support (helpful for textures later)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED)
 
-        // --- NEW SHADER COMPILATION BLOCK ---
+        // --- Shader Compilation ---
         val vShader = glCreateShader(GL_VERTEX_SHADER).also {
             glShaderSource(it, File("src/main/resources/shaders/vertex.glsl").readText())
             glCompileShader(it)
@@ -419,17 +323,17 @@ class Minecraft {
         glDeleteShader(vShader)
         glDeleteShader(fShader)
 
-        setupUI()
+        setupUI() // Make sure setupUI is updated to the 5-float stride!
 
+        // Mouse Movement Callback
         glfwSetCursorPosCallback(window) { _, xpos, ypos ->
             if (firstMouse) {
                 lastX = xpos
                 lastY = ypos
                 firstMouse = false
             }
-
             val xOffset = xpos - lastX
-            val yOffset = lastY - ypos // Y is inverted in screen space
+            val yOffset = lastY - ypos
             lastX = xpos
             lastY = ypos
 
@@ -437,53 +341,37 @@ class Minecraft {
             yaw += (xOffset * sensitivity).toFloat()
             pitch += (yOffset * sensitivity).toFloat()
 
-            // Constrain pitch so you don't flip your neck
             if (pitch > 89f) pitch = 89f
             if (pitch < -89f) pitch = -89f
 
-            // Recalculate the direction vector
             val direction = org.joml.Vector3f()
             direction.x = Math.cos(Math.toRadians(yaw.toDouble())).toFloat() * Math.cos(Math.toRadians(pitch.toDouble())).toFloat()
             direction.y = Math.sin(Math.toRadians(pitch.toDouble())).toFloat()
             direction.z = Math.sin(Math.toRadians(yaw.toDouble())).toFloat() * Math.cos(Math.toRadians(pitch.toDouble())).toFloat()
-
             cameraFront = direction.normalize()
         }
 
-        // Put this at the very end of your init() function
+        // Mouse Click Callback
         glfwSetMouseButtonCallback(window) { _, button, action, _ ->
             if (action == GLFW_PRESS && selectedBlock != null) {
                 val result = selectedBlock!!
-
-                // 1. Find which chunk the block belongs to
                 val targetChunk = getChunkAt(result.blockPos.x.toFloat(), result.blockPos.z.toFloat())
 
                 if (targetChunk != null) {
-                    // 2. Convert global world coordinates to local chunk coordinates (0-15)
                     val lx = (result.blockPos.x % 16 + 16) % 16
                     val ly = result.blockPos.y
                     val lz = (result.blockPos.z % 16 + 16) % 16
 
                     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                        // Destroy block
-                        val id = targetChunk.getBlock(lx, ly, lz)
-                        inventory[id] = inventory.getOrDefault(id, 0) + 1
-
                         targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
-                        buildChunkMesh(targetChunk) // Re-generate the mesh for this chunk
-
-                        println("Destroyed block at $lx, $ly, $lz. Inventory: $inventory")
+                        buildChunkMesh(targetChunk)
                     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-                        // Place block logic
                         val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
-
-                        // Find chunk for the NEW block (it might be in a neighboring chunk!)
                         val placeChunk = getChunkAt(placePos.x.toFloat(), placePos.z.toFloat())
                         if (placeChunk != null) {
                             val plx = (placePos.x % 16 + 16) % 16
                             val ply = placePos.y
                             val plz = (placePos.z % 16 + 16) % 16
-
                             placeChunk.setBlock(plx, ply, plz, BlockType.STONE)
                             buildChunkMesh(placeChunk)
                         }
@@ -495,23 +383,25 @@ class Minecraft {
 
 
     private fun setupUI() {
-        val size = 0.03f // Size of the crosshair
+        val size = 0.03f
         val vertices = floatArrayOf(
-            -size, 0f, 0f, 1f, 1f, 1f, // Horizontal line
-            size, 0f, 0f, 1f, 1f, 1f,
-            0f, -size, 0f, 1f, 1f, 1f, // Vertical line
-            0f, size, 0f, 1f, 1f, 1f
+            // Pos X, Y, Z      // U, V (Empty/White part of atlas)
+            -size, 0f, 0f,      0.9f, 0.9f,
+            size, 0f, 0f,      0.9f, 0.9f,
+            0f, -size, 0f,     0.9f, 0.9f,
+            0f,  size, 0f,     0.9f, 0.9f
         )
 
         crosshairVao = glGenVertexArrays()
-        val vbo = glGenBuffers()
         glBindVertexArray(crosshairVao)
+        val vbo = glGenBuffers()
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
 
-        glVertexAttribPointer(0, 3, GL_FLOAT, false, 6 * 4, 0)
+        val stride = 5 * 4
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(1, 3, GL_FLOAT, false, 6 * 4, (3 * 4).toLong())
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
         glEnableVertexAttribArray(1)
     }
 
@@ -581,24 +471,39 @@ class Minecraft {
 
 
     private fun setupSelectionBox() {
+        // 5 floats per vertex: X, Y, Z, U, V
         val vertices = floatArrayOf(
-            // Lines for a 1x1x1 cube
-            0f,0f,0f, 0f,0f,0f, 1f,0f,0f, 0f,0f,0f, 1f,1f,0f, 0f,0f,0f, 0f,1f,0f, 0f,0f,0f,
-            0f,0f,1f, 0f,0f,0f, 1f,0f,1f, 0f,0f,0f, 1f,1f,1f, 0f,0f,0f, 0f,1f,1f, 0f,0f,0f,
-            0f,0f,0f, 0f,0f,0f, 0f,0f,1f, 0f,0f,0f, 1f,0f,0f, 0f,0f,0f, 1f,0f,1f, 0f,0f,0f,
-            1f,1f,0f, 0f,0f,0f, 1f,1f,1f, 0f,0f,0f, 0f,1f,0f, 0f,0f,0f, 0f,1f,1f, 0f,0f,0f
+            // Bottom square
+            0f,0f,0f, 0.9f,0.9f,  1f,0f,0f, 0.9f,0.9f,
+            1f,0f,0f, 0.9f,0.9f,  1f,0f,1f, 0.9f,0.9f,
+            1f,0f,1f, 0.9f,0.9f,  0f,0f,1f, 0.9f,0.9f,
+            0f,0f,1f, 0.9f,0.9f,  0f,0f,0f, 0.9f,0.9f,
+
+            // Top square
+            0f,1f,0f, 0.9f,0.9f,  1f,1f,0f, 0.9f,0.9f,
+            1f,1f,0f, 0.9f,0.9f,  1f,1f,1f, 0.9f,0.9f,
+            1f,1f,1f, 0.9f,0.9f,  0f,1f,1f, 0.9f,0.9f,
+            0f,1f,1f, 0.9f,0.9f,  0f,1f,0f, 0.9f,0.9f,
+
+            // Vertical pillars
+            0f,0f,0f, 0.9f,0.9f,  0f,1f,0f, 0.9f,0.9f,
+            1f,0f,0f, 0.9f,0.9f,  1f,1f,0f, 0.9f,0.9f,
+            1f,0f,1f, 0.9f,0.9f,  1f,1f,1f, 0.9f,0.9f,
+            0f,0f,1f, 0.9f,0.9f,  0f,1f,1f, 0.9f,0.9f
         )
+
         selectionVao = glGenVertexArrays()
-        val vbo = glGenBuffers()
         glBindVertexArray(selectionVao)
+        val vbo = glGenBuffers()
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
 
+        val stride = 5 * 4
         // Position
-        glVertexAttribPointer(0, 3, GL_FLOAT, false, 6 * 4, 0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
         glEnableVertexAttribArray(0)
-        // Use the 3 zeros in the data as a "black" color (0,0,0)
-        glVertexAttribPointer(1, 3, GL_FLOAT, false, 6 * 4, (3 * 4).toLong())
+        // UVs (instead of color)
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, (3 * 4).toLong())
         glEnableVertexAttribArray(1)
     }
 
@@ -621,7 +526,7 @@ class Minecraft {
 
     private fun buildChunkMesh(c: Chunk) {
         val vertices = MeshGenerator.generateChunkMesh(c)
-        c.vertexCount = vertices.size / 6
+        c.vertexCount = vertices.size / 5 // Updated to 5!
 
         c.vao = glGenVertexArrays()
         glBindVertexArray(c.vao)
@@ -629,13 +534,58 @@ class Minecraft {
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
 
-        val stride = 6 * 4
+        val stride = 5 * 4 // 5 floats * 4 bytes each
+
+        // Position: Location 0, Size 3 (X, Y, Z)
         glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(1, 3, GL_FLOAT, false, stride, (3 * 4).toLong())
+
+        // Texture UV: Location 1, Size 2 (U, V)
+        // Starts after 3 floats (12 bytes)
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, (3 * 4).toLong())
         glEnableVertexAttribArray(1)
 
         c.isMeshGenerated = true
+    }
+
+
+    private fun generateProceduralTexture(): Int {
+        val atlasSize = 256
+        val tileSize = 64 // 256 / 4 tiles = 64 pixels per tile
+        val buffer = BufferUtils.createByteBuffer(atlasSize * atlasSize * 4)
+
+        for (y in 0 until atlasSize) {
+            for (x in 0 until atlasSize) {
+                val tx = x / tileSize
+                val ty = y / tileSize
+
+                val r: Byte; val g: Byte; val b: Byte
+
+                when {
+                    tx == 0 && ty == 0 -> { r = 50; g = 110; b = 40 }   // Grass
+                    tx == 1 && ty == 0 -> { r = 90; g = 60; b = 30 }    // Dirt
+                    tx == 2 && ty == 0 -> { r = 100; g = 100; b = 100 } // Stone
+                    else -> { r = 120; g = 120; b = 120 }               // Default
+                }
+
+                // Add subtle noise so it's not a flat block of color
+                val noise = (Math.random() * 20).toInt().toByte()
+                buffer.put((r + noise).toByte())
+                buffer.put((g + noise).toByte())
+                buffer.put((b + noise).toByte())
+                buffer.put(255.toByte()) // Opacity
+            }
+        }
+        buffer.flip()
+
+        val id = glGenTextures()
+        glBindTexture(GL_TEXTURE_2D, id)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlasSize, atlasSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer)
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+
+        return id
     }
 
 
@@ -644,11 +594,3 @@ class Minecraft {
         glfwTerminate()
     }
 }
-
-//
-//enum class BlockType(val id: Byte) {
-//    AIR(0),
-//    GRASS(1),
-//    DIRT(2),
-//    STONE(3)
-//}
