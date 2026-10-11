@@ -7,6 +7,7 @@
 2026-10-11, 17:35, Fixed macOS GLFW startup crash (-XstartOnFirstThread via exec:exec); game launches and runs without crashing
 2026-10-11, 17:40, Debugging complete — game runs stably; ready for feature work
 2026-10-11, 17:45, Connected remote git@github.com:GrindelfP/kubold.git and pushed main branch
+2026-10-11, 18:32, Updated remote to git@github.com:GrindelfP/StrataDiver.git (repo moved on GitHub); commits: rename [UPDATE] cb1d080, control routing [FEATURE] 17ca5df
 2026-10-11, 17:50, Initialized agent skills filesystem: docs/agents/issue-tracker.md, triage-labels.md, domain.md; updated AGENTS.md
 2026-10-11, 18:00, User explored game for ~7 min — no crashes, core loop works (terrain, physics, breaking/placing, item pickup)
 2026-10-11, 18:15, Fixed 4 bugs: spawn collision push-up, input blocked when inventory open, GUI rewritten from 3D cubes to 2D screen-space quads, hotbar rendering added
