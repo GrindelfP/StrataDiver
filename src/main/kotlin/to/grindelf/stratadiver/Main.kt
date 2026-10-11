@@ -812,6 +812,8 @@ class StrataDiver {
             for (x in 0 until atlasSize) {
                 val tx = x / tileSize
                 val ty = y / tileSize
+                val ix = x % tileSize
+                val iy = y % tileSize
 
                 val r: Byte; val g: Byte; val b: Byte
 
@@ -830,6 +832,32 @@ class StrataDiver {
                         r = (60 + barkNoise).toByte()
                         g = (40 + barkNoise).toByte()
                         b = (30 + barkNoise).toByte()
+                    }
+                    tx == 3 && ty == 1 -> {                             // Slot frame (beveled)
+                        val light = 150; val dark = 90; val interior = 55
+                        when {
+                            iy < 3 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
+                            iy >= tileSize - 3 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
+                            ix < 3 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
+                            ix >= tileSize - 3 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
+                            else -> { r = interior.toByte(); g = interior.toByte(); b = interior.toByte() }
+                        }
+                    }
+                    tx == 0 && ty == 2 -> {                             // Selected slot (white frame)
+                        val white = 220; val light = 150; val dark = 90; val interior = 70
+                        when {
+                            iy < 4 || iy >= tileSize - 4 || ix < 4 || ix >= tileSize - 4 ->
+                                { r = white.toByte(); g = white.toByte(); b = white.toByte() }
+                            iy < 6 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
+                            iy >= tileSize - 6 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
+                            ix < 6 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
+                            ix >= tileSize - 6 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
+                            else -> { r = interior.toByte(); g = interior.toByte(); b = interior.toByte() }
+                        }
+                    }
+                    tx == 3 && ty == 2 -> {                             // GUI panel background
+                        val shade = 35 + (Math.random() * 8).toInt()
+                        r = shade.toByte(); g = shade.toByte(); b = shade.toByte()
                     }
                     else -> { r = 120; g = 120; b = 120 }
                 }
@@ -909,9 +937,9 @@ class StrataDiver {
 
         for (i in 0 until 9) {
             val x = startX + i * slotSize
-            drawUIQuad(stack, x, startY, slotSize, slotSize, 1, 1, shaderProgram)
+            drawUIQuad(stack, x, startY, slotSize, slotSize, 3, 1, shaderProgram)
             if (i == selectedSlot) {
-                drawUIQuad(stack, x, startY, slotSize, slotSize, 2, 1, shaderProgram)
+                drawUIQuad(stack, x, startY, slotSize, slotSize, 0, 2, shaderProgram)
             }
             val item = inventory.hotbar[i]
             if (item != null) {
@@ -933,8 +961,9 @@ class StrataDiver {
         val slotSize = 50f
         val totalWidth = 9 * slotSize
         val startX = (1280f - totalWidth) / 2f
-        val mainStartY = 100f
-        val hotbarY = mainStartY + 3 * slotSize + 20f
+        // The 27-slot grid sits above the always-on hotbar, like in Minecraft
+        val mainStartY = 720f - slotSize - 10f - 3 * slotSize - 20f
+        val hotbarY = 720f - slotSize - 10f
 
         for (i in 0 until 27) {
             val row = i / 9
@@ -990,35 +1019,27 @@ class StrataDiver {
         val slotSize = 50f
         val totalWidth = 9 * slotSize
         val startX = (1280f - totalWidth) / 2f
-        val mainStartY = 100f
-        val hotbarY = mainStartY + 3 * slotSize + 20f
+        // The 27-slot grid sits above the always-on hotbar, like in Minecraft
+        val mainStartY = 720f - slotSize - 10f - 3 * slotSize - 20f
 
         glDisable(GL_DEPTH_TEST)
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack))
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
         glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
 
+        // Dark panel behind the grid, reaching down to the always-on hotbar
+        val panelBottom = 720f - 10f // hotbar bottom edge
+        drawUIQuad(stack, startX - 30f, mainStartY - 20f, totalWidth + 60f, panelBottom - mainStartY + 20f, 3, 2, shaderProgram)
+
         for (i in 0 until 27) {
             val row = i / 9
             val col = i % 9
             val x = startX + col * slotSize
             val y = mainStartY + row * slotSize
-            drawUIQuad(stack, x, y, slotSize, slotSize, 1, 1, shaderProgram)
+            drawUIQuad(stack, x, y, slotSize, slotSize, 3, 1, shaderProgram)
             val item = inventory.main[i]
             if (item != null) {
                 drawUIQuad(stack, x + 5, y + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
-            }
-        }
-
-        for (i in 0 until 9) {
-            val x = startX + i * slotSize
-            drawUIQuad(stack, x, hotbarY, slotSize, slotSize, 1, 1, shaderProgram)
-            if (i == selectedSlot) {
-                drawUIQuad(stack, x, hotbarY, slotSize, slotSize, 2, 1, shaderProgram)
-            }
-            val item = inventory.hotbar[i]
-            if (item != null) {
-                drawUIQuad(stack, x + 5, hotbarY + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
             }
         }
 
