@@ -12,6 +12,9 @@ uniform bool isMap;
 uniform vec2 playerPos; // X and Z of player
 uniform float mapZoom;  // How much area to show
 
+uniform bool isGui;   // GUI is drawn unlit, so it never flickers with the time of day
+uniform vec3 tint;    // Per-face brightness for composited Icons
+
 void main() {
     if (isMap) {
         vec2 uv = TexCoord * 2.0 - 1.0;
@@ -39,20 +42,29 @@ void main() {
         vec4 texColor = texture(textureAtlas, TexCoord);
         if (texColor.a < 0.1) discard;
 
-        vec3 norm = normalize(Normal);
+        vec3 finalLight;
 
-        // 1. Ambient: Very dim base light so nights aren't pitch black
-        float ambient = 0.15;
+        if (isGui) {
+            // GUI is unlit and deterministic; Icons carry their own face shading
+            // through `tint` so the three faces of a cube stay distinguishable.
+            finalLight = tint;
+        } else {
+            vec3 norm = normalize(Normal);
 
-        // 2. Sun Light (Yellowish)
-        float sunDiff = max(dot(norm, normalize(sunDir)), 0.0);
-        vec3 sunColor = sunDiff * vec3(1.0, 0.9, 0.8);
+            // 1. Ambient: Very dim base light so nights aren't pitch black
+            float ambient = 0.15;
 
-        // 3. Moon Light (Blueish/Dim)
-        float moonDiff = max(dot(norm, normalize(moonDir)), 0.0);
-        vec3 moonColor = moonDiff * vec3(0.2, 0.3, 0.5);
+            // 2. Sun Light (Yellowish)
+            float sunDiff = max(dot(norm, normalize(sunDir)), 0.0);
+            vec3 sunColor = sunDiff * vec3(1.0, 0.9, 0.8);
 
-        vec3 finalLight = min(vec3(ambient) + sunColor + moonColor, vec3(1.0));
+            // 3. Moon Light (Blueish/Dim)
+            float moonDiff = max(dot(norm, normalize(moonDir)), 0.0);
+            vec3 moonColor = moonDiff * vec3(0.2, 0.3, 0.5);
+
+            finalLight = min(vec3(ambient) + sunColor + moonColor, vec3(1.0));
+        }
+
         FragColor = vec4(texColor.rgb * finalLight, texColor.a);
     }
 }

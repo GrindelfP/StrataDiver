@@ -7,7 +7,10 @@ import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.*
 import org.lwjgl.opengl.GL20.*
 import org.lwjgl.opengl.GL30.glBindVertexArray
+import org.lwjgl.opengl.GL30.glDeleteBuffers
+import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import org.lwjgl.opengl.GL30.glGenVertexArrays
+import org.lwjgl.opengl.GL30.glGenerateMipmap
 import org.lwjgl.system.MemoryUtil.NULL
 import java.io.File
 import kotlin.math.floor
@@ -307,8 +310,12 @@ class StrataDiver {
             // Turn map mode OFF so crosshair doesn't get circular-masked or noise-colored
             glUniform1i(isMapLoc, 0)
 
+            // The crosshair is a cutout GUI element: draw it unlit at full brightness.
+            glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
+            glUniform3f(glGetUniformLocation(shaderProgram, "tint"), 1f, 1f, 1f)
             glBindVertexArray(crosshairVao)
-            glDrawArrays(GL_LINES, 0, 4)
+            glDrawArrays(GL_TRIANGLES, 0, 6)
+            glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
 
             glEnable(GL_DEPTH_TEST)
 
@@ -572,12 +579,15 @@ class StrataDiver {
                     targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
                     buildChunkMesh(targetChunk)
 
-                    // Spawn the item at the center of the broken block
-                    entities.add(DroppedItem(org.joml.Vector3f(
-                        result.blockPos.x + 0.5f,
-                        result.blockPos.y + 0.5f,
-                        result.blockPos.z + 0.5f
-                    ), type))
+                    // Leaves Drop nothing: a canopy is large, and filling all 36 slots
+                    // with leaf blocks would be worse than useless.
+                    if (type != BlockType.LEAVES) {
+                        entities.add(DroppedItem(org.joml.Vector3f(
+                            result.blockPos.x + 0.5f,
+                            result.blockPos.y + 0.5f,
+                            result.blockPos.z + 0.5f
+                        ), type))
+                    }
                 }
             } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                 val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
@@ -617,13 +627,22 @@ class StrataDiver {
     }
 
     private fun setupUI() {
-        val size = 0.03f
+        // A quad showing the crosshair tile. The tile is a cutout, so the transparent
+        // pixels are discarded and only the cross itself is drawn.
+        val size = 0.035f
+        val t = Atlas.CROSSHAIR
+        val u0 = t.tx / Atlas.TILES.toFloat()
+        val v0 = t.ty / Atlas.TILES.toFloat()
+        val u1 = (t.tx + 1) / Atlas.TILES.toFloat()
+        val v1 = (t.ty + 1) / Atlas.TILES.toFloat()
+
         val vertices = floatArrayOf(
-            // Pos X, Y, Z      // U, V (Empty/White part of atlas)
-            -size, 0f, 0f,      0.9f, 0.9f,
-            size, 0f, 0f,      0.9f, 0.9f,
-            0f, -size, 0f,     0.9f, 0.9f,
-            0f,  size, 0f,     0.9f, 0.9f
+            -size, -size, 0f, u0, v0,
+             size, -size, 0f, u1, v0,
+             size,  size, 0f, u1, v1,
+            -size, -size, 0f, u0, v0,
+             size,  size, 0f, u1, v1,
+            -size,  size, 0f, u0, v1
         )
 
         crosshairVao = glGenVertexArrays()
@@ -776,11 +795,19 @@ class StrataDiver {
         // IMPORTANT: Now using 8 floats per vertex (Pos:3, UV:2, Normal:3)
         c.vertexCount = vertices.size / 8
 
+        // Release the previous mesh first. Without this, every break and every place
+        // leaks a VAO and its VBO for the lifetime of the session.
+        if (c.vao != -1) {
+            glDeleteVertexArrays(c.vao)
+            if (c.vbo != -1) glDeleteBuffers(c.vbo)
+        }
+
         c.vao = glGenVertexArrays()
         glBindVertexArray(c.vao)
         val vbo = glGenBuffers()
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
+        c.vbo = vbo
 
         // Stride is 8 floats * 4 bytes = 32 bytes
         val stride = 8 * 4
@@ -804,80 +831,24 @@ class StrataDiver {
 
 
     private fun generateProceduralTexture(): Int {
-        val atlasSize = 256
-        val tileSize = 64 // 256 / 4 tiles = 64 pixels per tile
-        val buffer = BufferUtils.createByteBuffer(atlasSize * atlasSize * 4)
-
-        for (y in 0 until atlasSize) {
-            for (x in 0 until atlasSize) {
-                val tx = x / tileSize
-                val ty = y / tileSize
-                val ix = x % tileSize
-                val iy = y % tileSize
-
-                val r: Byte; val g: Byte; val b: Byte
-
-                when {
-                    tx == 0 && ty == 0 -> { r = 50; g = 110; b = 40 }   // Grass
-                    tx == 1 && ty == 0 -> { r = 90; g = 60; b = 30 }    // Dirt
-                    tx == 2 && ty == 0 -> { r = 100; g = 100; b = 100 } // Stone
-                    tx == 3 && ty == 0 -> {                             // Bedrock
-                        val darkNoise = (Math.random() * 30).toInt()
-                        r = (20 + darkNoise).toByte()
-                        g = (20 + darkNoise).toByte()
-                        b = (25 + darkNoise).toByte()
-                    }
-                    tx == 0 && ty == 1 -> {
-                        val barkNoise = (Math.random() * 15).toInt()
-                        r = (60 + barkNoise).toByte()
-                        g = (40 + barkNoise).toByte()
-                        b = (30 + barkNoise).toByte()
-                    }
-                    tx == 3 && ty == 1 -> {                             // Slot frame (beveled)
-                        val light = 200; val dark = 140; val interior = 115
-                        when {
-                            iy < 3 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
-                            iy >= tileSize - 3 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
-                            ix < 3 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
-                            ix >= tileSize - 3 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
-                            else -> { r = interior.toByte(); g = interior.toByte(); b = interior.toByte() }
-                        }
-                    }
-                    tx == 0 && ty == 2 -> {                             // Selected slot (white frame)
-                        val white = 245; val light = 200; val dark = 140; val interior = 125
-                        when {
-                            iy < 4 || iy >= tileSize - 4 || ix < 4 || ix >= tileSize - 4 ->
-                                { r = white.toByte(); g = white.toByte(); b = white.toByte() }
-                            iy < 6 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
-                            iy >= tileSize - 6 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
-                            ix < 6 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
-                            ix >= tileSize - 6 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
-                            else -> { r = interior.toByte(); g = interior.toByte(); b = interior.toByte() }
-                        }
-                    }
-                    tx == 3 && ty == 2 -> {                             // GUI panel background
-                        val shade = 85 + (Math.random() * 10).toInt()
-                        r = shade.toByte(); g = shade.toByte(); b = shade.toByte()
-                    }
-                    else -> { r = 120; g = 120; b = 120 }
-                }
-
-                // Add subtle noise so it's not a flat block of color
-                val noise = (Math.random() * 20).toInt().toByte()
-                buffer.put((r + noise).toByte())
-                buffer.put((g + noise).toByte())
-                buffer.put((b + noise).toByte())
-                buffer.put(255.toByte()) // Opacity
-            }
-        }
-        buffer.flip()
+        val atlasSize = Atlas.TILES * Atlas.TILE_PX
+        val buffer = Art.buildAtlas()
 
         val id = glGenTextures()
         glBindTexture(GL_TEXTURE_2D, id)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlasSize, atlasSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer)
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        // Mipmapped minification kills the shimmer of 16px art seen at distance. The art
+        // generator bleeds each tile's outer pixels into a guard ring precisely so this
+        // is safe to do inside an atlas.
+        glGenerateMipmap(GL_TEXTURE_2D)
+
+        // NEAREST magnification keeps the chunky, unsmoothed look; the mipmap chain only
+        // kicks in once a tile is smaller than a screen pixel.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
 
         return id
     }
@@ -910,8 +881,9 @@ class StrataDiver {
     private fun drawUIQuad(
         stack: java.nio.FloatBuffer,
         x: Float, y: Float, w: Float, h: Float,
-        texX: Int, texY: Int,
-        shaderProgram: Int
+        tile: TileRef,
+        shaderProgram: Int,
+        tint: Float = 1f
     ) {
         val modelLoc = glGetUniformLocation(shaderProgram, "model")
         val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
@@ -919,9 +891,68 @@ class StrataDiver {
             .translate(x + w / 2f, y + h / 2f, 0f)
             .scale(w, h, 1f)
         glUniformMatrix4fv(modelLoc, false, modelMatrix.get(stack))
-        glUniform2f(uvOffsetLoc, texX.toFloat(), texY.toFloat())
+        glUniform2f(uvOffsetLoc, tile.tx.toFloat(), tile.ty.toFloat())
+        glUniform1f(glGetUniformLocation(shaderProgram, "tint"), tint)
         glBindVertexArray(uiQuadVao)
         glDrawArrays(GL_TRIANGLES, 0, 6)
+    }
+
+    /**
+     * Draws an isometric Icon for [type], assembled from three of its own tiles — top,
+     * north and east — each shaded with its own brightness so the three faces stay
+     * distinguishable. No atlas space is spent per block: every block gets an Icon free.
+     */
+    private fun drawBlockIcon(
+        stack: java.nio.FloatBuffer,
+        x: Float, y: Float, size: Float,
+        type: BlockType,
+        shaderProgram: Int
+    ) {
+        val modelLoc = glGetUniformLocation(shaderProgram, "model")
+        val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
+
+        // Classic 2:1 isometric cube: a diamond on top with two parallelogram sides.
+        val w = size
+        val h = size / 4f        // vertical half-diagonal of the top diamond
+        val sideH = size * 0.36f // height of the side faces
+        val cx = x + size / 2f
+        val cy = y + size * 0.14f
+
+        /**
+         * Maps the unit quad onto the parallelogram p0-p1-?-p3, where the fourth corner
+         * is p1 + p3 - p0. The unit quad's vertices are
+         * (-.5,-.5) (.5,-.5) (.5,.5) (-.5,.5), so p0/p1/p3 are the corners opposite
+         * that final diagonal vertex.
+         */
+        fun face(
+            p0x: Float, p0y: Float, p1x: Float, p1y: Float, p3x: Float, p3y: Float,
+            tile: TileRef, brightness: Float
+        ) {
+            val a = p1x - p0x; val b = p1y - p0y
+            val c = p3x - p0x; val d = p3y - p0y
+            val e = (p1x + p3x) / 2f
+            val f = (p1y + p3y) / 2f
+
+            val m = org.joml.Matrix4f()
+            m.set(0, 0, a); m.set(0, 1, b)
+            m.set(1, 0, c); m.set(1, 1, d)
+            m.set(3, 0, e); m.set(3, 1, f)
+            glUniformMatrix4fv(modelLoc, false, m.get(stack))
+            glUniform2f(uvOffsetLoc, tile.tx.toFloat(), tile.ty.toFloat())
+            glUniform1f(glGetUniformLocation(shaderProgram, "tint"), brightness)
+            glBindVertexArray(uiQuadVao)
+            glDrawArrays(GL_TRIANGLES, 0, 6)
+        }
+
+        val left = cx - w / 2f
+        val right = cx + w / 2f
+
+        // Left (north) face: top-left -> top-right, hanging down.
+        face(left, cy, cx, cy + h, left, cy + sideH, type.tile(Face.NORTH), 0.72f)
+        // Right (east) face, mirrored.
+        face(cx, cy + h, right, cy, cx, cy + h + sideH, type.tile(Face.EAST), 0.55f)
+        // Top face, the diamond: bottom corner first so the fourth vertex is the apex.
+        face(cx, cy + h, right, cy, left, cy, type.tile(Face.TOP), 1.0f)
     }
 
     private fun renderHotbar(stack: java.nio.FloatBuffer) {
@@ -934,19 +965,21 @@ class StrataDiver {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack))
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
         glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
 
         for (i in 0 until 9) {
             val x = startX + i * slotSize
-            drawUIQuad(stack, x, startY, slotSize, slotSize, 3, 1, shaderProgram)
+            drawUIQuad(stack, x, startY, slotSize, slotSize, Atlas.SLOT, shaderProgram)
             if (i == selectedSlot) {
-                drawUIQuad(stack, x, startY, slotSize, slotSize, 0, 2, shaderProgram)
+                drawUIQuad(stack, x, startY, slotSize, slotSize, Atlas.SLOT_SELECTED, shaderProgram)
             }
             val item = inventory.hotbar[i]
             if (item != null) {
-                drawUIQuad(stack, x + 5, startY + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
+                drawBlockIcon(stack, x + 5f, startY + 5f, slotSize - 10f, item.type, shaderProgram)
             }
         }
 
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
         glEnable(GL_DEPTH_TEST)
     }
 
@@ -1009,10 +1042,9 @@ class StrataDiver {
         val mx = doubleArrayOf(0.0)
         val my = doubleArrayOf(0.0)
         glfwGetCursorPos(window, mx, my)
-        val mouseX = mx[0].toFloat()
-        val mouseY = my[0].toFloat()
-        val size = 40f
-        drawUIQuad(stack, mouseX - size / 2, mouseY - size / 2, size, size, item.type.texX, item.type.texY, shaderProgram)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
+        drawBlockIcon(stack, mx[0].toFloat() - 20f, my[0].toFloat() - 20f, 40f, item.type, shaderProgram)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
     }
 
     private fun renderInventory(stack: java.nio.FloatBuffer) {
@@ -1026,24 +1058,28 @@ class StrataDiver {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack))
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
         glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
 
-        // Panel behind the grid only — stops above the always-on hotbar so the hotbar stays visible
+        // Panel behind the grid only — stops above the always-on hotbar so the hotbar stays visible.
+        // The panel is lighter than the slots, which are lighter than a stone Icon, so every
+        // block reads as a distinct shape rather than dissolving into the background.
         val hotbarY = 720f - slotSize - 10f
         val panelBottom = hotbarY - 10f
-        drawUIQuad(stack, startX - 30f, mainStartY - 20f, totalWidth + 60f, panelBottom - mainStartY + 20f, 3, 2, shaderProgram)
+        drawUIQuad(stack, startX - 30f, mainStartY - 20f, totalWidth + 60f, panelBottom - mainStartY + 20f, Atlas.PANEL, shaderProgram)
 
         for (i in 0 until 27) {
             val row = i / 9
             val col = i % 9
             val x = startX + col * slotSize
             val y = mainStartY + row * slotSize
-            drawUIQuad(stack, x, y, slotSize, slotSize, 3, 1, shaderProgram)
+            drawUIQuad(stack, x, y, slotSize, slotSize, Atlas.SLOT, shaderProgram)
             val item = inventory.main[i]
             if (item != null) {
-                drawUIQuad(stack, x + 5, y + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
+                drawBlockIcon(stack, x + 5f, y + 5f, slotSize - 10f, item.type, shaderProgram)
             }
         }
 
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
         glEnable(GL_DEPTH_TEST)
     }
 

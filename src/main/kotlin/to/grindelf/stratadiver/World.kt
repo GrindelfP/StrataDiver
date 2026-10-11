@@ -1,17 +1,82 @@
 package to.grindelf.stratadiver
 
-import org.lwjgl.opengl.ARBVertexArrayObject.glDeleteVertexArrays
+import org.lwjgl.opengl.GL30.glDeleteBuffers
+import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import kotlin.math.floor
 
 
+// --- Atlas Layout ---
+// The atlas is a 4x4 grid of 64px tiles. `ty` is the row index in the uploaded
+// buffer, which OpenGL reads as v=0 at the first row.
+object Atlas {
+    const val TILES = 4
+    const val TILE_PX = 64
+    const val ART_PX = 16
+    const val UPSCALE = TILE_PX / ART_PX // 4
+
+    // Edge-bleed guard ring, in upscaled pixels. Must stay well under one art pixel
+    // (4px), or it would eat the outermost art row — which is exactly what a 1px
+    // bevel or border on a UI tile is.
+    const val PAD = 2
+
+    // Block tiles
+    val GRASS_TOP = TileRef(0, 0)
+    val GRASS_SIDE = TileRef(1, 0)
+    val DIRT = TileRef(2, 0)
+    val STONE = TileRef(3, 0)
+    val WOOD_SIDE = TileRef(0, 1)
+    val WOOD_TOP = TileRef(1, 1)
+    val LEAVES = TileRef(2, 1)
+
+    // UI tiles
+    val SLOT = TileRef(3, 1)
+    val SLOT_SELECTED = TileRef(0, 2)
+    val BEDROCK = TileRef(1, 2)
+    val PANEL = TileRef(2, 2)
+    val CROSSHAIR = TileRef(3, 2)
+}
+
+/** A tile's position in the atlas grid. */
+data class TileRef(val tx: Int, val ty: Int)
+
 // --- Block Definitions ---
-enum class BlockType(val id: Byte, val texX: Int, val texY: Int) {
-    AIR(0, 0, 0),
-    GRASS(1, 0, 0),
-    DIRT(2, 1, 0),
-    STONE(3, 2, 0),
-    BEDROCK(4, 3, 0),
-    WOOD(5, 0, 1);
+enum class Face { TOP, BOTTOM, NORTH, SOUTH, WEST, EAST }
+
+/** Every face of a block type draws the same tile. */
+private fun allFaces(tile: TileRef) = Face.entries.associateWith { tile }
+
+/**
+ * A Block Type. `opaque` drives face culling: a face is drawn whenever its
+ * neighbour is not opaque. AIR and LEAVES are both non-opaque, so faces against
+ * air and against leaves are all kept.
+ */
+enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<Face, TileRef>) {
+    AIR(0, false, emptyMap()),
+    GRASS(1, true, mapOf(
+        Face.TOP to Atlas.GRASS_TOP,
+        Face.BOTTOM to Atlas.DIRT,
+        Face.NORTH to Atlas.GRASS_SIDE, Face.SOUTH to Atlas.GRASS_SIDE,
+        Face.WEST to Atlas.GRASS_SIDE, Face.EAST to Atlas.GRASS_SIDE
+    )),
+    DIRT(2, true, allFaces(Atlas.DIRT)),
+    STONE(3, true, allFaces(Atlas.STONE)),
+    BEDROCK(4, true, allFaces(Atlas.BEDROCK)),
+    WOOD(5, true, mapOf(
+        Face.TOP to Atlas.WOOD_TOP,
+        Face.BOTTOM to Atlas.WOOD_TOP,
+        Face.NORTH to Atlas.WOOD_SIDE, Face.SOUTH to Atlas.WOOD_SIDE,
+        Face.WEST to Atlas.WOOD_SIDE, Face.EAST to Atlas.WOOD_SIDE
+    )),
+    LEAVES(6, false, allFaces(Atlas.LEAVES));
+
+    /** The tile this Block Type draws on the given face. */
+    fun tile(face: Face): TileRef = faces[face] ?: faces.values.first()
+
+    /** Side tile, used for Icons and dropped items. */
+    val primary: TileRef get() = tile(Face.NORTH)
+
+    val texX: Int get() = primary.tx
+    val texY: Int get() = primary.ty
 
     companion object {
         fun getById(id: Byte) = entries.find { it.id == id } ?: AIR
@@ -28,6 +93,7 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     private val blocks = ByteArray(SIZE * SIZE * SIZE)
 
     var vao: Int = -1
+    var vbo: Int = -1
     var vertexCount: Int = 0
     var isMeshGenerated = false
 
@@ -88,24 +154,28 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 
 
     private fun addSimpleTree(tx: Int, ty: Int, tz: Int) {
-        // --- FIX 1: CHANGE TRUNK FROM STONE TO WOOD ---
-        for (i in 0..4) {
-            if (ty + i < SIZE) {
-                setBlock(tx, ty + i, tz, BlockType.WOOD) // Was BlockType.STONE
-            }
+        // Trunk: 4 or 5 blocks, so trees vary in height.
+        val trunkHeight = 4 + (Math.random() * 2).toInt()
+        for (i in 0..trunkHeight) {
+            setBlock(tx, ty + i, tz, BlockType.WOOD)
         }
 
-        // Leaves (a simple 3x3x3 cube of grass blocks)
-        for (lx in -1..1) {
-            // Leaves start higher up the trunk
-            for (ly in 3..5) {
-                for (lz in -1..1) {
-                    if (tx + lx in 0 until SIZE && ty + ly in 0 until SIZE && tz + lz in 0 until SIZE) {
-                        // Only place leaves if the space is empty
-                        if (getBlock(tx + lx, ty + ly, tz + lz) == BlockType.AIR.id) {
-                            setBlock(tx + lx, ty + ly, tz + lz, BlockType.GRASS)
-                        }
-                    }
+        // Oak canopy: two wide layers over the trunk top, capped by a narrow one.
+        // Corners are trimmed at random, which is what stops it reading as a box.
+        val top = ty + trunkHeight
+        for (ly in (top - 2)..(top + 1)) {
+            val radius = if (ly == top + 1) 1 else 2
+            for (lx in -radius..radius) {
+                for (lz in -radius..radius) {
+                    val distSq = lx * lx + lz * lz
+                    if (distSq > radius * radius) continue
+                    // Trim the outermost ring's corners.
+                    if (distSq >= radius * radius && Math.random() < 0.6) continue
+
+                    val bx = tx + lx; val by = ly; val bz = tz + lz
+                    if (bx !in 0 until SIZE || by !in 0 until SIZE || bz !in 0 until SIZE) continue
+                    if (getBlock(bx, by, bz) != BlockType.AIR.id) continue
+                    setBlock(bx, by, bz, BlockType.LEAVES)
                 }
             }
         }
@@ -114,8 +184,13 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     fun cleanup() {
         if (vao != -1) {
             glDeleteVertexArrays(vao)
-            isMeshGenerated = false
+            vao = -1
         }
+        if (vbo != -1) {
+            glDeleteBuffers(vbo)
+            vbo = -1
+        }
+        isMeshGenerated = false
     }
 }
 
@@ -141,12 +216,15 @@ object MeshGenerator {
                     val gz = (chunk.zOffset * size + z).toFloat()
 
                     // --- FACE CULLING ---
-                    if (chunk.getBlock(x, y + 1, z) == BlockType.AIR.id) addFaceTop(vertices, gx, gy, gz, blockType)
-                    if (chunk.getBlock(x, y - 1, z) == BlockType.AIR.id) addFaceBottom(vertices, gx, gy, gz, blockType)
-                    if (chunk.getBlock(x, y, z - 1) == BlockType.AIR.id) addFaceNorth(vertices, gx, gy, gz, blockType)
-                    if (chunk.getBlock(x, y, z + 1) == BlockType.AIR.id) addFaceSouth(vertices, gx, gy, gz, blockType)
-                    if (chunk.getBlock(x - 1, y, z) == BlockType.AIR.id) addFaceWest(vertices, gx, gy, gz, blockType)
-                    if (chunk.getBlock(x + 1, y, z) == BlockType.AIR.id) addFaceEast(vertices, gx, gy, gz, blockType)
+                    // A face is drawn unless its neighbour hides it. AIR and
+                    // LEAVES are both non-opaque, so faces against open air and
+                    // against leaves are kept; faces buried in stone are not.
+                    if (exposed(chunk, x, y + 1, z)) addFaceTop(vertices, gx, gy, gz, blockType)
+                    if (exposed(chunk, x, y - 1, z)) addFaceBottom(vertices, gx, gy, gz, blockType)
+                    if (exposed(chunk, x, y, z - 1)) addFaceNorth(vertices, gx, gy, gz, blockType)
+                    if (exposed(chunk, x, y, z + 1)) addFaceSouth(vertices, gx, gy, gz, blockType)
+                    if (exposed(chunk, x - 1, y, z)) addFaceWest(vertices, gx, gy, gz, blockType)
+                    if (exposed(chunk, x + 1, y, z)) addFaceEast(vertices, gx, gy, gz, blockType)
                 }
             }
         }
@@ -154,11 +232,18 @@ object MeshGenerator {
     }
 
 
-    private fun getUVs(bt: BlockType): FloatArray {
-        val uMin = bt.texX / ATLAS_SIZE
-        val vMin = bt.texY / ATLAS_SIZE
-        val uMax = (bt.texX + 1) / ATLAS_SIZE
-        val vMax = (bt.texY + 1) / ATLAS_SIZE
+    /** True when the neighbour at this position does not hide the adjoining face. */
+    private fun exposed(chunk: Chunk, x: Int, y: Int, z: Int): Boolean {
+        val neighbour = BlockType.getById(chunk.getBlock(x, y, z))
+        return !neighbour.opaque
+    }
+
+    private fun getUVs(bt: BlockType, face: Face): FloatArray {
+        val tile = bt.tile(face)
+        val uMin = tile.tx / ATLAS_SIZE
+        val vMin = tile.ty / ATLAS_SIZE
+        val uMax = (tile.tx + 1) / ATLAS_SIZE
+        val vMax = (tile.ty + 1) / ATLAS_SIZE
         return floatArrayOf(uMin, vMin, uMax, vMax)
     }
 
@@ -169,7 +254,7 @@ object MeshGenerator {
     }
 
     private fun addFaceTop(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.TOP)
         val nx = 0f; val ny = 1f; val nz = 0f // Facing Up
         addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
         addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
@@ -180,7 +265,7 @@ object MeshGenerator {
     }
 
     private fun addFaceBottom(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.BOTTOM)
         val nx = 0f; val ny = -1f; val nz = 0f // Facing Down
         addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
         addVertex(v, x + 1f, y, z, uMax, vMin, nx, ny, nz)
@@ -191,7 +276,7 @@ object MeshGenerator {
     }
 
     private fun addFaceNorth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.NORTH)
         val nx = 0f; val ny = 0f; val nz = -1f // Facing North (-Z)
         addVertex(v, x + 1f, y + 1f, z, uMin, vMax, nx, ny, nz)
         addVertex(v, x + 1f, y, z, uMin, vMin, nx, ny, nz)
@@ -202,7 +287,7 @@ object MeshGenerator {
     }
 
     private fun addFaceSouth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.SOUTH)
         val nx = 0f; val ny = 0f; val nz = 1f // Facing South (+Z)
         addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
         addVertex(v, x, y, z + 1f, uMin, vMin, nx, ny, nz)
@@ -213,7 +298,7 @@ object MeshGenerator {
     }
 
     private fun addFaceWest(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.WEST)
         val nx = -1f; val ny = 0f; val nz = 0f // Facing West (-X)
         addVertex(v, x, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
         addVertex(v, x, y + 1f, z, uMin, vMax, nx, ny, nz)
@@ -224,7 +309,7 @@ object MeshGenerator {
     }
 
     private fun addFaceEast(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
-        val (uMin, vMin, uMax, vMax) = getUVs(bt)
+        val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.EAST)
         val nx = 1f; val ny = 0f; val nz = 0f // Facing East (+X)
         addVertex(v, x + 1f, y + 1f, z, uMax, vMax, nx, ny, nz)
         addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
