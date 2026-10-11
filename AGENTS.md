@@ -62,3 +62,17 @@ There are **no tests** in this project yet.
 ## Context Log
 
 See `CONTEXT.md` for session history.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (uses `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
