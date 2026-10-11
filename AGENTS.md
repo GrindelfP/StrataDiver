@@ -63,7 +63,8 @@ There are **no tests** in this project yet.
 
 ## Context Log
 
-See `CONTEXT.md` for session history.
+`CONTEXT.md` is the **domain glossary** (shared vocabulary — keep it free of implementation
+detail). Session history lives in `docs/session-log.md`.
 
 ## Agent skills
 
