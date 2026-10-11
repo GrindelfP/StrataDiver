@@ -83,6 +83,15 @@ class StrataDiver {
     private var heldItem: ItemStack? = null
     private val hotbar = arrayOfNulls<BlockType>(9) // What is in the 9 slots
 
+    // CONTROL ROUTING
+    // Input is split into two modes. GAMEPLAY owns WASD, the camera and world
+    // interaction. INTERACTIVE owns cursor-driven GUI interaction and is active
+    // whenever any GUI layer (inventory now, pause menu later) is open. Every
+    // input callback routes through this property so gameplay and menu bindings
+    // can never leak into each other.
+    private val controlMode: ControlMode
+        get() = if (isInventoryOpen) ControlMode.INTERACTIVE else ControlMode.GAMEPLAY
+
     // TEXTURES
     private var textureAtlasID: Int = 0
 
@@ -317,8 +326,13 @@ class StrataDiver {
     }
 
     private fun processInput() {
-        if (isInventoryOpen) return
+        when (controlMode) {
+            ControlMode.GAMEPLAY -> processGameplayInput()
+            ControlMode.INTERACTIVE -> processInteractiveInput()
+        }
+    }
 
+    private fun processGameplayInput() {
         val walkSpeed = 0.08f
         val moveDir = org.joml.Vector3f(0f, 0f, 0f)
 
@@ -348,23 +362,39 @@ class StrataDiver {
 
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
             glfwSetWindowShouldClose(window, true)
+    }
 
-        glfwSetKeyCallback(window) { _, key, _, action, _ ->
-            if (action == GLFW_PRESS) {
-                // Toggle Inventory
-                if (key == GLFW_KEY_E) {
-                    isInventoryOpen = !isInventoryOpen
-                    // Unlock mouse when inventory is open
-                    glfwSetInputMode(window, GLFW_CURSOR,
-                        if (isInventoryOpen) GLFW_CURSOR_NORMAL else GLFW_CURSOR_DISABLED)
-                }
+    private fun processInteractiveInput() {
+        // WASD / jump are unassigned while a GUI layer is open; freeze the player.
+        velocity.x = 0f
+        velocity.z = 0f
+    }
 
-                // Hotbar selection with 1-9 keys
-                if (key in GLFW_KEY_1..GLFW_KEY_9) {
-                    selectedSlot = key - GLFW_KEY_1
-                }
-            }
+    private fun handleGameplayKey(key: Int) {
+        // Hotbar selection with 1-9 keys
+        if (key in GLFW_KEY_1..GLFW_KEY_9) {
+            selectedSlot = key - GLFW_KEY_1
         }
+        // Open a GUI layer -> switch to interactive mode
+        if (key == GLFW_KEY_E) enterInteractiveLayer()
+    }
+
+    private fun handleInteractiveKey(key: Int) {
+        // Close the GUI layer -> return to gameplay mode
+        if (key == GLFW_KEY_E) exitInteractiveLayer()
+    }
+
+    private fun enterInteractiveLayer() {
+        isInventoryOpen = true
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL)
+        // Avoid a camera jump when the cursor is recaptured later
+        firstMouse = true
+    }
+
+    private fun exitInteractiveLayer() {
+        isInventoryOpen = false
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED)
+        firstMouse = true
     }
 
 
@@ -473,9 +503,18 @@ class StrataDiver {
 
         setupUI()
 
+        // --- Key Callback (routed by control mode) ---
+        glfwSetKeyCallback(window) { _, key, _, action, _ ->
+            if (action != GLFW_PRESS) return@glfwSetKeyCallback
+            when (controlMode) {
+                ControlMode.GAMEPLAY -> handleGameplayKey(key)
+                ControlMode.INTERACTIVE -> handleInteractiveKey(key)
+            }
+        }
+
         // --- Mouse Movement Callback ---
         glfwSetCursorPosCallback(window) { _, xpos, ypos ->
-            if (isInventoryOpen) return@glfwSetCursorPosCallback
+            if (controlMode != ControlMode.GAMEPLAY) return@glfwSetCursorPosCallback
             if (firstMouse) {
                 lastX = xpos
                 lastY = ypos
@@ -500,75 +539,77 @@ class StrataDiver {
             cameraFront = direction.normalize()
         }
 
-        // --- Mouse Click Callback (Updated for 3D Chunks) ---
+        // --- Mouse Click Callback (routed by control mode) ---
         glfwSetMouseButtonCallback(window) { _, button, action, _ ->
             if (action != GLFW_PRESS) return@glfwSetMouseButtonCallback
-            if (isInventoryOpen) {
-                handleInventoryClick(button)
-                return@glfwSetMouseButtonCallback
+            when (controlMode) {
+                ControlMode.GAMEPLAY -> handleGameplayClick(button)
+                ControlMode.INTERACTIVE -> handleInventoryClick(button)
             }
-            if (selectedBlock != null) {
-                val result = selectedBlock!!
-                // FIX: Pass Y coordinate to find the correct vertical chunk
-                val targetChunk = getChunkAt(
-                    result.blockPos.x.toFloat(),
-                    result.blockPos.y.toFloat(),
-                    result.blockPos.z.toFloat()
-                )
+        }
+    }
 
-                if (targetChunk != null) {
-                    // Get local coordinates inside the 16x16x16 chunk
-                    val lx = (result.blockPos.x % 16 + 16) % 16
-                    val ly = (result.blockPos.y % 16 + 16) % 16 // Local Y fix
-                    val lz = (result.blockPos.z % 16 + 16) % 16
+    private fun handleGameplayClick(button: Int) {
+        if (selectedBlock == null) return
+        val result = selectedBlock!!
+        // Pass Y coordinate to find the correct vertical chunk
+        val targetChunk = getChunkAt(
+            result.blockPos.x.toFloat(),
+            result.blockPos.y.toFloat(),
+            result.blockPos.z.toFloat()
+        )
 
-                    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                        val blockId = targetChunk.getBlock(lx, ly, lz)
-                        if (blockId != BlockType.BEDROCK.id) {
-                            val type = BlockType.getById(blockId)
-                            targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
-                            buildChunkMesh(targetChunk)
+        if (targetChunk != null) {
+            // Get local coordinates inside the 16x16x16 chunk
+            val lx = (result.blockPos.x % 16 + 16) % 16
+            val ly = (result.blockPos.y % 16 + 16) % 16
+            val lz = (result.blockPos.z % 16 + 16) % 16
 
-                            // Spawn the item at the center of the broken block
-                            entities.add(DroppedItem(org.joml.Vector3f(
-                                result.blockPos.x + 0.5f,
-                                result.blockPos.y + 0.5f,
-                                result.blockPos.z + 0.5f
-                            ), type))
-                        }
-                    } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-                        val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
-                        // Prevent placing a block inside the player
-                        val playerMinX = cameraPos.x - playerWidth
-                        val playerMaxX = cameraPos.x + playerWidth
-                        val playerMinY = cameraPos.y - 1.6f
-                        val playerMaxY = cameraPos.y + 0.2f
-                        val playerMinZ = cameraPos.z - playerWidth
-                        val playerMaxZ = cameraPos.z + playerWidth
-                        val blockMinX = placePos.x.toFloat()
-                        val blockMaxX = placePos.x.toFloat() + 1f
-                        val blockMinY = placePos.y.toFloat()
-                        val blockMaxY = placePos.y.toFloat() + 1f
-                        val blockMinZ = placePos.z.toFloat()
-                        val blockMaxZ = placePos.z.toFloat() + 1f
-                        val intersectsPlayer = playerMaxX > blockMinX && playerMinX < blockMaxX &&
-                                playerMaxY > blockMinY && playerMinY < blockMaxY &&
-                                playerMaxZ > blockMinZ && playerMinZ < blockMaxZ
-                        if (!intersectsPlayer) {
-                            val placeChunk = getChunkAt(
-                                placePos.x.toFloat(),
-                                placePos.y.toFloat(),
-                                placePos.z.toFloat()
-                            )
-                            if (placeChunk != null) {
-                                val plx = (placePos.x % 16 + 16) % 16
-                                val ply = (placePos.y % 16 + 16) % 16
-                                val plz = (placePos.z % 16 + 16) % 16
-                                val placeType = inventory.hotbar[selectedSlot]?.type ?: BlockType.STONE
-                            placeChunk.setBlock(plx, ply, plz, placeType)
-                                buildChunkMesh(placeChunk)
-                            }
-                        }
+            if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                val blockId = targetChunk.getBlock(lx, ly, lz)
+                if (blockId != BlockType.BEDROCK.id) {
+                    val type = BlockType.getById(blockId)
+                    targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
+                    buildChunkMesh(targetChunk)
+
+                    // Spawn the item at the center of the broken block
+                    entities.add(DroppedItem(org.joml.Vector3f(
+                        result.blockPos.x + 0.5f,
+                        result.blockPos.y + 0.5f,
+                        result.blockPos.z + 0.5f
+                    ), type))
+                }
+            } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+                val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
+                // Prevent placing a block inside the player
+                val playerMinX = cameraPos.x - playerWidth
+                val playerMaxX = cameraPos.x + playerWidth
+                val playerMinY = cameraPos.y - 1.6f
+                val playerMaxY = cameraPos.y + 0.2f
+                val playerMinZ = cameraPos.z - playerWidth
+                val playerMaxZ = cameraPos.z + playerWidth
+                val blockMinX = placePos.x.toFloat()
+                val blockMaxX = placePos.x.toFloat() + 1f
+                val blockMinY = placePos.y.toFloat()
+                val blockMaxY = placePos.y.toFloat() + 1f
+                val blockMinZ = placePos.z.toFloat()
+                val blockMaxZ = placePos.z.toFloat() + 1f
+                val intersectsPlayer = playerMaxX > blockMinX && playerMinX < blockMaxX &&
+                        playerMaxY > blockMinY && playerMinY < blockMaxY &&
+                        playerMaxZ > blockMinZ && playerMinZ < blockMaxZ
+                if (!intersectsPlayer) {
+                    val placeChunk = getChunkAt(
+                        placePos.x.toFloat(),
+                        placePos.y.toFloat(),
+                        placePos.z.toFloat()
+                    )
+                    if (placeChunk != null) {
+                        val plx = (placePos.x % 16 + 16) % 16
+                        val ply = (placePos.y % 16 + 16) % 16
+                        val plz = (placePos.z % 16 + 16) % 16
+                        val placeType = inventory.hotbar[selectedSlot]?.type ?: BlockType.STONE
+                        placeChunk.setBlock(plx, ply, plz, placeType)
+                        buildChunkMesh(placeChunk)
                     }
                 }
             }
@@ -884,10 +925,11 @@ class StrataDiver {
     private fun handleInventoryClick(button: Int) {
         if (button != GLFW_MOUSE_BUTTON_LEFT) return
 
-        var mouseX = 0.0
-        var mouseY = 0.0
-        glfwGetCursorPos(window, doubleArrayOf(mouseX), doubleArrayOf(mouseY))
-
+        val mx = doubleArrayOf(0.0)
+        val my = doubleArrayOf(0.0)
+        glfwGetCursorPos(window, mx, my)
+        val mouseX = mx[0].toFloat()
+        val mouseY = my[0].toFloat()
         val slotSize = 50f
         val totalWidth = 9 * slotSize
         val startX = (1280f - totalWidth) / 2f
@@ -935,11 +977,13 @@ class StrataDiver {
 
     private fun renderHeldItem(stack: java.nio.FloatBuffer) {
         val item = heldItem ?: return
-        var mouseX = 0.0
-        var mouseY = 0.0
-        glfwGetCursorPos(window, doubleArrayOf(mouseX), doubleArrayOf(mouseY))
+        val mx = doubleArrayOf(0.0)
+        val my = doubleArrayOf(0.0)
+        glfwGetCursorPos(window, mx, my)
+        val mouseX = mx[0].toFloat()
+        val mouseY = my[0].toFloat()
         val size = 40f
-        drawUIQuad(stack, mouseX.toFloat() - size / 2, mouseY.toFloat() - size / 2, size, size, item.type.texX, item.type.texY, shaderProgram)
+        drawUIQuad(stack, mouseX - size / 2, mouseY - size / 2, size, size, item.type.texX, item.type.texY, shaderProgram)
     }
 
     private fun renderInventory(stack: java.nio.FloatBuffer) {
