@@ -834,7 +834,7 @@ class StrataDiver {
                         b = (30 + barkNoise).toByte()
                     }
                     tx == 3 && ty == 1 -> {                             // Slot frame (beveled)
-                        val light = 150; val dark = 90; val interior = 55
+                        val light = 200; val dark = 140; val interior = 115
                         when {
                             iy < 3 -> { r = light.toByte(); g = light.toByte(); b = light.toByte() }
                             iy >= tileSize - 3 -> { r = dark.toByte(); g = dark.toByte(); b = dark.toByte() }
@@ -844,7 +844,7 @@ class StrataDiver {
                         }
                     }
                     tx == 0 && ty == 2 -> {                             // Selected slot (white frame)
-                        val white = 220; val light = 150; val dark = 90; val interior = 70
+                        val white = 245; val light = 200; val dark = 140; val interior = 125
                         when {
                             iy < 4 || iy >= tileSize - 4 || ix < 4 || ix >= tileSize - 4 ->
                                 { r = white.toByte(); g = white.toByte(); b = white.toByte() }
@@ -856,7 +856,7 @@ class StrataDiver {
                         }
                     }
                     tx == 3 && ty == 2 -> {                             // GUI panel background
-                        val shade = 35 + (Math.random() * 8).toInt()
+                        val shade = 85 + (Math.random() * 10).toInt()
                         r = shade.toByte(); g = shade.toByte(); b = shade.toByte()
                     }
                     else -> { r = 120; g = 120; b = 120 }
@@ -1027,8 +1027,9 @@ class StrataDiver {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
         glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
 
-        // Dark panel behind the grid, reaching down to the always-on hotbar
-        val panelBottom = 720f - 10f // hotbar bottom edge
+        // Panel behind the grid only — stops above the always-on hotbar so the hotbar stays visible
+        val hotbarY = 720f - slotSize - 10f
+        val panelBottom = hotbarY - 10f
         drawUIQuad(stack, startX - 30f, mainStartY - 20f, totalWidth + 60f, panelBottom - mainStartY + 20f, 3, 2, shaderProgram)
 
         for (i in 0 until 27) {
