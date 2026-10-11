@@ -285,8 +285,12 @@ class StrataDiver {
                     .scale(1.005f)
 
                 glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, selectionModel.get(stack))
+                // Unlit white: the wireframe must not be shaded by the sun or discarded.
+                glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
+                glUniform3f(glGetUniformLocation(shaderProgram, "tint"), 1f, 1f, 1f)
                 glBindVertexArray(selectionVao)
                 glDrawArrays(GL_LINES, 0, 24)
+                glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
             }
 
             // --- 10. Render UI (Minimap) ---
@@ -310,12 +314,24 @@ class StrataDiver {
             // Turn map mode OFF so crosshair doesn't get circular-masked or noise-colored
             glUniform1i(isMapLoc, 0)
 
-            // The crosshair is a cutout GUI element: draw it unlit at full brightness.
+            // The crosshair is a cutout GUI element: draw it unlit, at full brightness,
+            // pinned to the camera. Without an explicit model matrix it inherits whatever
+            // the last draw left behind — which is how it ended up drawn at the block you
+            // were looking at instead of at screen centre.
             glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
             glUniform3f(glGetUniformLocation(shaderProgram, "tint"), 1f, 1f, 1f)
+            glUniformMatrix4fv(
+                glGetUniformLocation(shaderProgram, "model"), false,
+                org.joml.Matrix4f().translate(cameraPos).get(stack)
+            )
             glBindVertexArray(crosshairVao)
             glDrawArrays(GL_TRIANGLES, 0, 6)
+
             glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
+            glUniformMatrix4fv(
+                glGetUniformLocation(shaderProgram, "model"), false,
+                org.joml.Matrix4f().get(stack)
+            )
 
             glEnable(GL_DEPTH_TEST)
 
@@ -733,26 +749,32 @@ class StrataDiver {
     }
 
 
+
+    // UV of the centre of Atlas.LINE, used by the selection wireframe. The old 0.9,0.9
+    // pointed into a tile that is now a cutout, so every fragment was discarded.
+    private val LINE_U = 0.5f / Atlas.TILES
+    private val LINE_V = 3.5f / Atlas.TILES
+
     private fun setupSelectionBox() {
         // 5 floats per vertex: X, Y, Z, U, V
         val vertices = floatArrayOf(
             // Bottom square
-            0f,0f,0f, 0.9f,0.9f,  1f,0f,0f, 0.9f,0.9f,
-            1f,0f,0f, 0.9f,0.9f,  1f,0f,1f, 0.9f,0.9f,
-            1f,0f,1f, 0.9f,0.9f,  0f,0f,1f, 0.9f,0.9f,
-            0f,0f,1f, 0.9f,0.9f,  0f,0f,0f, 0.9f,0.9f,
+            0f,0f,0f, LINE_U,LINE_V,  1f,0f,0f, LINE_U,LINE_V,
+            1f,0f,0f, LINE_U,LINE_V,  1f,0f,1f, LINE_U,LINE_V,
+            1f,0f,1f, LINE_U,LINE_V,  0f,0f,1f, LINE_U,LINE_V,
+            0f,0f,1f, LINE_U,LINE_V,  0f,0f,0f, LINE_U,LINE_V,
 
             // Top square
-            0f,1f,0f, 0.9f,0.9f,  1f,1f,0f, 0.9f,0.9f,
-            1f,1f,0f, 0.9f,0.9f,  1f,1f,1f, 0.9f,0.9f,
-            1f,1f,1f, 0.9f,0.9f,  0f,1f,1f, 0.9f,0.9f,
-            0f,1f,1f, 0.9f,0.9f,  0f,1f,0f, 0.9f,0.9f,
+            0f,1f,0f, LINE_U,LINE_V,  1f,1f,0f, LINE_U,LINE_V,
+            1f,1f,0f, LINE_U,LINE_V,  1f,1f,1f, LINE_U,LINE_V,
+            1f,1f,1f, LINE_U,LINE_V,  0f,1f,1f, LINE_U,LINE_V,
+            0f,1f,1f, LINE_U,LINE_V,  0f,1f,0f, LINE_U,LINE_V,
 
             // Vertical pillars
-            0f,0f,0f, 0.9f,0.9f,  0f,1f,0f, 0.9f,0.9f,
-            1f,0f,0f, 0.9f,0.9f,  1f,1f,0f, 0.9f,0.9f,
-            1f,0f,1f, 0.9f,0.9f,  1f,1f,1f, 0.9f,0.9f,
-            0f,0f,1f, 0.9f,0.9f,  0f,1f,1f, 0.9f,0.9f
+            0f,0f,0f, LINE_U,LINE_V,  0f,1f,0f, LINE_U,LINE_V,
+            1f,0f,0f, LINE_U,LINE_V,  1f,1f,0f, LINE_U,LINE_V,
+            1f,0f,1f, LINE_U,LINE_V,  1f,1f,1f, LINE_U,LINE_V,
+            0f,0f,1f, LINE_U,LINE_V,  0f,1f,1f, LINE_U,LINE_V
         )
 
         selectionVao = glGenVertexArrays()
@@ -892,7 +914,7 @@ class StrataDiver {
             .scale(w, h, 1f)
         glUniformMatrix4fv(modelLoc, false, modelMatrix.get(stack))
         glUniform2f(uvOffsetLoc, tile.tx.toFloat(), tile.ty.toFloat())
-        glUniform1f(glGetUniformLocation(shaderProgram, "tint"), tint)
+        glUniform3f(glGetUniformLocation(shaderProgram, "tint"), tint, tint, tint)
         glBindVertexArray(uiQuadVao)
         glDrawArrays(GL_TRIANGLES, 0, 6)
     }
@@ -911,13 +933,6 @@ class StrataDiver {
         val modelLoc = glGetUniformLocation(shaderProgram, "model")
         val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
 
-        // Classic 2:1 isometric cube: a diamond on top with two parallelogram sides.
-        val w = size
-        val h = size / 4f        // vertical half-diagonal of the top diamond
-        val sideH = size * 0.36f // height of the side faces
-        val cx = x + size / 2f
-        val cy = y + size * 0.14f
-
         /**
          * Maps the unit quad onto the parallelogram p0-p1-?-p3, where the fourth corner
          * is p1 + p3 - p0. The unit quad's vertices are
@@ -934,16 +949,23 @@ class StrataDiver {
             val f = (p1y + p3y) / 2f
 
             val m = org.joml.Matrix4f()
-            m.set(0, 0, a); m.set(0, 1, b)
-            m.set(1, 0, c); m.set(1, 1, d)
+            m.set(0, 0, a); m.set(0, 1, c)
+            m.set(1, 0, b); m.set(1, 1, d)
             m.set(3, 0, e); m.set(3, 1, f)
             glUniformMatrix4fv(modelLoc, false, m.get(stack))
             glUniform2f(uvOffsetLoc, tile.tx.toFloat(), tile.ty.toFloat())
-            glUniform1f(glGetUniformLocation(shaderProgram, "tint"), brightness)
+            glUniform3f(glGetUniformLocation(shaderProgram, "tint"), brightness, brightness, brightness)
             glBindVertexArray(uiQuadVao)
             glDrawArrays(GL_TRIANGLES, 0, 6)
         }
 
+        // Classic 2:1 isometric cube, sized so the whole silhouette fits the given box.
+        val w = size
+        val h = size / 4f        // vertical half-diagonal of the top diamond
+        val sideH = size * 0.36f // height of the side faces
+        val totalH = 2f * h + sideH
+        val cx = x + size / 2f
+        val cy = y + (size - totalH) / 2f + h // centre the silhouette in the box
         val left = cx - w / 2f
         val right = cx + w / 2f
 

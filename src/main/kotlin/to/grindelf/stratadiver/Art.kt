@@ -253,22 +253,22 @@ object Art {
     private val LEAVES = TileArt(
         leafPal,
         listOf(
-            "bbdbbdbbdbbdbbdb",
-            "bdbbbdbbd.bdbbdb",
-            "dbbdbbdbbdbbbdb.",
-            "bbdbbdbbbdbdbbd.",
-            "bdbbdbbdbbbdbbdb",
-            "bd.bdbdbbdbbdbbd",
-            "dbbdbbdbbdbdbbb.",
-            "bbdbbdbbdbbdbbdb",
-            "bdbbdbbdbbd.bdbb",
-            "dbbdbbdbbdbdbbd.",
-            "bbdbbdbbd.bbdbdb",
-            "bdbbd.bdbbdbbdbb",
-            "dbbdbbdbbdbbdbb.",
-            "bbdbbdbbdbbdbbdb",
-            "bdbbdbbdbbd.bdbb",
-            "dbbdbbdbbdbdbbd.",
+            "dbbbbdblbbdb..ld",
+            "b..bbbdbblbd..bb",
+            "b..blb..bbbldbbb",
+            "bbbdbb..dbbbbdbb",
+            "blbbdbbbldbbbbdl",
+            "dbblbdbbb..bbbbd",
+            "bdb..ldbb..dlbbb",
+            "lbd..bbdbbbbdblb",
+            "bbldbbbbdlbbb..b",
+            "bbbbdbbbbdblb..b",
+            "d..bbdlbbbdbblbd",
+            "b..bbb..lbbdbbbl",
+            "bbdlbb..bblbdbbb",
+            "bbbdblbbdb..ldbb",
+            "lbbb..blbd..bbdb",
+            "dblb..bbbldbbbbd",
         ),
         grain = 8,
         transparent = '.',
@@ -292,6 +292,12 @@ object Art {
     })
 
     private val PANEL = TileArt(panelPal, List(16) { "bbbbbbbbbbbbbbbb" }, grain = 3)
+
+    /** Solid opaque white, for wireframe overlays. Must stay alpha 255 or it is discarded. */
+    private val LINE = TileArt(
+        mapOf('w' to rgb(255, 255, 255)),
+        List(16) { "wwwwwwwwwwwwwwww" }
+    )
 
     /** Cutout crosshair, drawn over the world. */
     private val CROSSHAIR = TileArt(
@@ -323,6 +329,7 @@ object Art {
         Atlas.BEDROCK to BEDROCK,
         Atlas.PANEL to PANEL,
         Atlas.CROSSHAIR to CROSSHAIR,
+        Atlas.LINE to LINE,
     )
 
     /**

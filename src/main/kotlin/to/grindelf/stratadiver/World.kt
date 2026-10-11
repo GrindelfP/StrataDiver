@@ -34,6 +34,9 @@ object Atlas {
     val BEDROCK = TileRef(1, 2)
     val PANEL = TileRef(2, 2)
     val CROSSHAIR = TileRef(3, 2)
+
+    // Solid opaque white, for wireframe overlays that must not be discarded.
+    val LINE = TileRef(0, 3)
 }
 
 /** A tile's position in the atlas grid. */
@@ -176,6 +179,21 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
                     if (bx !in 0 until SIZE || by !in 0 until SIZE || bz !in 0 until SIZE) continue
                     if (getBlock(bx, by, bz) != BlockType.AIR.id) continue
                     setBlock(bx, by, bz, BlockType.LEAVES)
+                }
+            }
+        }
+
+        // Cap the trunk. A bare trunk top is visible when you look down on the tree, so
+        // the very last trunk block always gets leaves directly above it.
+        val capY = ty + trunkHeight + 1
+        if (capY < SIZE) {
+            for (dx in -1..1) {
+                for (dz in -1..1) {
+                    val bx = tx + dx; val bz = tz + dz
+                    if (bx !in 0 until SIZE || bz !in 0 until SIZE) continue
+                    if (getBlock(bx, capY, bz) == BlockType.AIR.id) {
+                        setBlock(bx, capY, bz, BlockType.LEAVES)
+                    }
                 }
             }
         }
