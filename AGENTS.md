@@ -49,7 +49,9 @@ There are **no tests** in this project yet.
 - **Chunks**: 16×16×16 blocks, stored as `ByteArray`. World is a `Map<Triple<Int,Int,Int>, Chunk>`. Vertical stacking: 16 chunks in Y.
 - **Terrain**: Perlin noise → height map. Sea level at Y=128. Layers: bedrock → stone → dirt → grass.
 - **Meshing**: Face-culling — only faces adjacent to AIR are emitted. Vertex format: 3 pos + 2 UV + 3 normal = **8 floats per vertex**.
-- **Textures**: Procedurally generated 256×256 atlas (4×4 tiles of 64px). Tiles: grass, dirt, stone, bedrock, wood.
+- **Textures**: Procedurally generated 256×256 atlas (4×4 tiles of 64px). Block tiles: grass, dirt, stone, bedrock, wood. UI tiles: slot frame (beveled), selected-slot (white frame), panel background.
+- **Control routing**: All input (per-frame polling, key callback, mouse move, mouse click) routes through a `ControlMode` — `GAMEPLAY` or `INTERACTIVE`. `INTERACTIVE` is active whenever a GUI layer is open (inventory now, escape menu later): gameplay keys are unassigned, the player is frozen, and mouse clicks drive the UI.
+- **GUI**: Rendered as flat 2D screen-space quads in a separate orthographic pass after the 3D world. The hotbar is always-on at the bottom; opening the inventory (E) shows a 3×9 grid above it on a panel. Slots accept mouse clicks (pick up / move / stack via the cursor-held item).
 - **Day/night**: `CONST_TIME = true` fixed in `Main.kt` companion. Sun/moon direction drives diffuse lighting in shader.
 - **Physics**: AABB collision per-axis (X, Z, then Y). Gravity = −0.015, jump = 0.25.
 - **Block interaction**: Raycast (step 0.1, reach 5.0) → left click breaks, right click places.
