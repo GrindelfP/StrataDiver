@@ -32,30 +32,34 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     var isMeshGenerated = false
 
     init {
-        var treeSurfaceY = 10
+        val seaLevel = 128
+        var surfaceLocalY = -1 // Track if the surface is IN THIS chunk
 
         for (x in 0 until SIZE) {
             for (z in 0 until SIZE) {
                 val worldX = (this.xOffset * SIZE + x).toDouble()
                 val worldZ = (this.zOffset * SIZE + z).toDouble()
 
-                val noise1 = PerlinNoise.noise(worldX * 0.02, 0.0, worldZ * 0.02) * 12.0
-                val noise2 = PerlinNoise.noise(worldX * 0.1, 11.0, worldZ * 0.1) * 3.0
+                val noise1 = PerlinNoise.noise(worldX * 0.02, 0.0, worldZ * 0.02) * 20.0
+                val noise2 = PerlinNoise.noise(worldX * 0.1, 11.0, worldZ * 0.1) * 5.0
+                val terrainHeight = (seaLevel + noise1 + noise2).toInt()
 
-                val baseHeight = 10
-                val finalHeight = (baseHeight + noise1 + noise2).toInt().coerceIn(1, SIZE - 1)
-
-                // --- FIX: Capture the height at the center for the tree ---
+                // Check if this specific column's surface is inside this chunk
                 if (x == 8 && z == 8) {
-                    treeSurfaceY = finalHeight
+                    // Convert world terrain height to local chunk Y
+                    val localY = terrainHeight - (this.yOffset * SIZE)
+                    if (localY in 0 until SIZE) {
+                        surfaceLocalY = localY
+                    }
                 }
 
                 for (y in 0 until SIZE) {
+                    val worldY = (this.yOffset * SIZE + y)
                     val block = when {
-                        y == 0 -> BlockType.BEDROCK
-                        y > finalHeight -> BlockType.AIR
-                        y == finalHeight -> BlockType.GRASS
-                        y > finalHeight - 3 -> BlockType.DIRT
+                        worldY == 0 -> BlockType.BEDROCK
+                        worldY > terrainHeight -> BlockType.AIR
+                        worldY == terrainHeight -> BlockType.GRASS
+                        worldY > terrainHeight - 3 -> BlockType.DIRT
                         else -> BlockType.STONE
                     }
                     setBlock(x, y, z, block)
@@ -63,10 +67,8 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
             }
         }
 
-        // We only plant if the surface is within a reasonable range for this chunk
-        if (Math.random() < 0.1) { // 10% chance per chunk
-            // treeSurfaceY + 1 puts the first wood block ON TOP of the grass
-            addSimpleTree(8, treeSurfaceY + 1, 8)
+        if (surfaceLocalY != -1 && Math.random() < 0.6) {
+            addSimpleTree(8, surfaceLocalY + 1, 8)
         }
     }
 

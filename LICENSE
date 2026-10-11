@@ -1,0 +1,45 @@
+Kubold Non-Commercial License
+
+Copyright (c) 2026 Gregory Shipunov aka. GrindelfP
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software for non-commercial purposes only, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+COMMERCIAL USE PROHIBITED:
+
+You may not use this Software, or any derivative works based upon it, for
+any commercial purposes. Commercial purposes include, but are not limited
+to:
+
+  a) Selling, offering for sale, or monetizing the Software or any part of it;
+  b) Using the Software in any revenue-generating product or service;
+  c) Using the Software for commercial training, consulting, or benchmarking;
+  c) Distributing the Software as part of a paid product or service;
+  d) Using the Software to provide a paid service to third parties;
+  e) Any use that directly or indirectly generates revenue or commercial
+     benefit.
+
+Non-commercial personal, educational, and hobbyist use is permitted.
+
+If you wish to use this Software for commercial purposes, you must obtain
+a separate commercial license from the copyright holder.
+
+DISCLAIMER AND ATTRIBUTION:
+
+This Software is an independent, educational, non-commercial experiment. It is
+not affiliated with, endorsed by, or sponsored by Mojang AB, Microsoft, or any
+of their affiliates. The original game concept that inspired this Software is
+"Minecraft", a trademark of Mojang AB / Microsoft. This Software is a clean-room
+implementation for educational purposes only and does not use any original
+Minecraft source code, assets, or other proprietary material.

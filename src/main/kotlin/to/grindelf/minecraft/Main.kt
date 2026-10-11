@@ -10,19 +10,21 @@ import org.lwjgl.opengl.GL30.glBindVertexArray
 import org.lwjgl.opengl.GL30.glGenVertexArrays
 import org.lwjgl.system.MemoryUtil.NULL
 import java.io.File
+import kotlin.math.floor
 
 
 fun main() {
-    Minecraft().run()
+    Kubold().run()
 }
 
 
-class Minecraft {
+class Kubold {
 
     companion object {
-        const val DAY_SPEED: Float = 0.2f
+        const val CONST_TIME: Boolean = true
         const val QUICK_DAY_SPEED: Float = 0.0174f
         const val MINECRAFT_DAY_SPEED: Float = 0.0052f
+        const val DAY_SPEED: Float = QUICK_DAY_SPEED
     }
 
     private var window: Long = 0
@@ -50,7 +52,7 @@ class Minecraft {
     private var vertexCount = 0
 
 
-    private val chunks = mutableMapOf<Pair<Int, Int>, Chunk>()
+    private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
     private val renderDistance = 4 // Chunks in every direction
 
     // PHYSICS
@@ -70,23 +72,49 @@ class Minecraft {
     private var selectionVao: Int = 0
     private var selectedBlock: RaycastResult? = null
 
-    // Inventory: BlockType ID -> Count
-    private val inventory = mutableMapOf<Byte, Int>()
+    // INVENTORY
+    private val inventory = Inventory()
+    private var isInventoryOpen = false
+    private var selectedSlot = 0 // 0 to 8 (Hotbar)
+    private val hotbar = arrayOfNulls<BlockType>(9) // What is in the 9 slots
 
     // TEXTURES
     private var textureAtlasID: Int = 0
 
-    // MAP
+    // MINIMAP
     private var mapVao: Int = 0
+
+    // ENTITIES
+    private val entities = mutableListOf<Entity>()
+    private var itemVao: Int = 0 // Create a simple 1x1 cube VAO for items in init()
+
 
     fun run() {
         init()
-        updateChunks() // Generates the 9x9 starting area
+        updateChunks()
+        safeSpawn()
         setupSelectionBox()
         setupMap()
         loop()
         cleanup()
     }
+
+    private fun safeSpawn() {
+        // Dynamically find the ground height at (5, 5)
+        val spawnX = 5f
+        val spawnZ = 5f
+        var spawnY = 130f // Fallback
+
+        // Look down from the top of the world to find the first solid block
+        for (y in 255 downTo 0) {
+            if (isSolid(spawnX, y.toFloat(), spawnZ)) {
+                spawnY = y.toFloat() + 2f // Place camera at eye level (2 blocks up)
+                break
+            }
+        }
+        cameraPos.set(spawnX, spawnY, spawnZ)
+    }
+
 
     private fun setupChunk() {
         // 1. Generate the mesh data from our Chunk object
@@ -156,9 +184,11 @@ class Minecraft {
     private fun loop() {
         val stack = BufferUtils.createFloatBuffer(16)
 
+        val uiProjection = org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f)
+
         while (!glfwWindowShouldClose(window)) {
             // 1. Celestial Timing
-            val time = glfwGetTime().toFloat() * DAY_SPEED
+            val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED;
             val sunDir = org.joml.Vector3f(
                 0.5f,
                 Math.sin(time.toDouble()).toFloat(),
@@ -212,6 +242,16 @@ class Minecraft {
                 }
             }
 
+            // 8.5 Render Entities
+            val isEntityLoc = glGetUniformLocation(shaderProgram, "isEntity")
+            glUniform1i(isEntityLoc, 1) // Turn ON entity mode
+
+            entities.forEach { entity ->
+                entity.render(stack, shaderProgram, itemVao)
+            }
+
+            glUniform1i(isEntityLoc, 0) // Turn OFF entity mode (so chunks render correctly)
+
             // 9. Render Selection Box
             if (selectedBlock != null) {
                 glLineWidth(2.0f)
@@ -251,7 +291,16 @@ class Minecraft {
 
             glEnable(GL_DEPTH_TEST)
 
-            // 12. Finalize Frame
+            // 12. RENDER UI Inventory
+            if (isInventoryOpen) {
+                // Switch to UI Projection
+                glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, uiProjection.get(stack))
+                glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, Matrix4f().get(stack)) // Identity view
+
+                renderInventory(stack)
+            }
+
+            // 13. Finalize Frame
             glfwSwapBuffers(window)
             glfwPollEvents()
         }
@@ -287,6 +336,23 @@ class Minecraft {
 
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
             glfwSetWindowShouldClose(window, true)
+
+        glfwSetKeyCallback(window) { _, key, _, action, _ ->
+            if (action == GLFW_PRESS) {
+                // Toggle Inventory
+                if (key == GLFW_KEY_E) {
+                    isInventoryOpen = !isInventoryOpen
+                    // Unlock mouse when inventory is open
+                    glfwSetInputMode(window, GLFW_CURSOR,
+                        if (isInventoryOpen) GLFW_CURSOR_NORMAL else GLFW_CURSOR_DISABLED)
+                }
+
+                // Hotbar selection with 1-9 keys
+                if (key in GLFW_KEY_1..GLFW_KEY_9) {
+                    selectedSlot = key - GLFW_KEY_1
+                }
+            }
+        }
     }
 
 
@@ -296,25 +362,43 @@ class Minecraft {
 
         // Resolve X
         val nextX = org.joml.Vector3f(cameraPos).add(velocity.x, 0f, 0f)
-        if (!checkCollision(nextX)) {
+        if (!checkCollisionPlayer(nextX)) {
             cameraPos.x = nextX.x
         }
 
         // Resolve Z
         val nextZ = org.joml.Vector3f(cameraPos).add(0f, 0f, velocity.z)
-        if (!checkCollision(nextZ)) {
+        if (!checkCollisionPlayer(nextZ)) {
             cameraPos.z = nextZ.z
         }
 
         // Resolve Y (Vertical)
         val nextY = org.joml.Vector3f(cameraPos).add(0f, velocity.y, 0f)
-        if (!checkCollision(nextY)) {
+        if (!checkCollisionPlayer(nextY)) {
             cameraPos.y = nextY.y
             isGrounded = false
         } else {
             // If we hit something while falling, we are grounded
             if (velocity.y < 0) isGrounded = true
             velocity.y = 0f
+        }
+
+
+        val it = entities.iterator()
+        while (it.hasNext()) {
+            val entity = it.next()
+            entity.update(this)
+
+            // Calculate distance to player's feet
+            val playerFeetY = cameraPos.y - 1.6f
+            val dist = org.joml.Vector3f(cameraPos.x, playerFeetY, cameraPos.z).distance(entity.pos)
+
+            if (dist < 0.5f && entity is DroppedItem) {
+                if (inventory.addItem(entity.type)) { // Uses the new Inventory class logic
+                    it.remove()
+                    println("Picked up: ${entity.type.name}")
+                }
+            }
         }
     }
 
@@ -330,23 +414,19 @@ class Minecraft {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE)
 
-        window = glfwCreateWindow(1280, 720, "Minecraft", NULL, NULL)
+        window = glfwCreateWindow(1280, 720, "Kubold", NULL, NULL)
         if (window == NULL) throw RuntimeException("Failed to create the GLFW window")
 
         glfwMakeContextCurrent(window)
         glfwSwapInterval(1)
         glfwShowWindow(window)
 
-        // CRITICAL: Initialize LWJGL capabilities before calling ANY gl... functions
         GL.createCapabilities()
 
-        // Now it is safe to call OpenGL functions
         textureAtlasID = generateProceduralTexture()
 
         glClearColor(0.5f, 0.8f, 1.0f, 1.0f)
         glEnable(GL_DEPTH_TEST)
-
-        // Transparent UI support (helpful for textures later)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
@@ -375,9 +455,12 @@ class Minecraft {
         glDeleteShader(vShader)
         glDeleteShader(fShader)
 
-        setupUI() // Make sure setupUI is updated to the 5-float stride!
 
-        // Mouse Movement Callback
+        itemVao = setupItemVao()
+
+        setupUI()
+
+        // --- Mouse Movement Callback ---
         glfwSetCursorPosCallback(window) { _, xpos, ypos ->
             if (firstMouse) {
                 lastX = xpos
@@ -403,32 +486,48 @@ class Minecraft {
             cameraFront = direction.normalize()
         }
 
-        // Mouse Click Callback
+        // --- Mouse Click Callback (Updated for 3D Chunks) ---
         glfwSetMouseButtonCallback(window) { _, button, action, _ ->
             if (action == GLFW_PRESS && selectedBlock != null) {
                 val result = selectedBlock!!
-                val targetChunk = getChunkAt(result.blockPos.x.toFloat(), result.blockPos.z.toFloat())
+                // FIX: Pass Y coordinate to find the correct vertical chunk
+                val targetChunk = getChunkAt(
+                    result.blockPos.x.toFloat(),
+                    result.blockPos.y.toFloat(),
+                    result.blockPos.z.toFloat()
+                )
 
                 if (targetChunk != null) {
+                    // Get local coordinates inside the 16x16x16 chunk
                     val lx = (result.blockPos.x % 16 + 16) % 16
-                    val ly = result.blockPos.y
+                    val ly = (result.blockPos.y % 16 + 16) % 16 // Local Y fix
                     val lz = (result.blockPos.z % 16 + 16) % 16
 
                     if (button == GLFW_MOUSE_BUTTON_LEFT) {
                         val blockId = targetChunk.getBlock(lx, ly, lz)
-                        // Check if the block is NOT Bedrock before destroying
                         if (blockId != BlockType.BEDROCK.id) {
+                            val type = BlockType.getById(blockId)
                             targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
                             buildChunkMesh(targetChunk)
-                        } else {
-                            println("Bedrock is too hard to break!")
+
+                            // Spawn the item at the center of the broken block
+                            entities.add(DroppedItem(org.joml.Vector3f(
+                                result.blockPos.x + 0.5f,
+                                result.blockPos.y + 0.5f,
+                                result.blockPos.z + 0.5f
+                            ), type))
                         }
                     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                         val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
-                        val placeChunk = getChunkAt(placePos.x.toFloat(), placePos.z.toFloat())
+                        // FIX: Pass Y coordinate for placement chunk lookup
+                        val placeChunk = getChunkAt(
+                            placePos.x.toFloat(),
+                            placePos.y.toFloat(),
+                            placePos.z.toFloat()
+                        )
                         if (placeChunk != null) {
                             val plx = (placePos.x % 16 + 16) % 16
-                            val ply = placePos.y
+                            val ply = (placePos.y % 16 + 16) % 16 // Local Y fix
                             val plz = (placePos.z % 16 + 16) % 16
                             placeChunk.setBlock(plx, ply, plz, BlockType.STONE)
                             buildChunkMesh(placeChunk)
@@ -438,7 +537,6 @@ class Minecraft {
             }
         }
     }
-
 
     private fun setupUI() {
         val size = 0.03f
@@ -464,27 +562,25 @@ class Minecraft {
     }
 
 
-    private fun getChunkAt(x: Float, z: Float): Chunk? {
-        val cx = Math.floor(x.toDouble() / 16.0).toInt()
-        val cz = Math.floor(z.toDouble() / 16.0).toInt()
-        return chunks[Pair(cx, cz)]
+    private fun getChunkAt(x: Float, y: Float, z: Float): Chunk? {
+        val cx = floor(x / 16.0).toInt()
+        val cy = floor(y / 16.0).toInt()
+        val cz = floor(z / 16.0).toInt()
+        return chunks[Triple(cx, cy, cz)]
     }
 
     // Update your existing isSolid to check the correct chunk
     private fun isSolid(x: Float, y: Float, z: Float): Boolean {
-        val cx = Math.floor(x.toDouble() / 16.0).toInt()
-        val cz = Math.floor(z.toDouble() / 16.0).toInt()
-        val chunk = chunks[Pair(cx, cz)] ?: return false // If chunk isn't loaded, it's not solid
+        val chunk = getChunkAt(x, y, z) ?: return false
 
-        // Local coordinates inside the chunk (0-15)
-        val lx = (Math.floor(x.toDouble()).toInt() % 16 + 16) % 16
-        val ly = Math.floor(y.toDouble()).toInt()
-        val lz = (Math.floor(z.toDouble()).toInt() % 16 + 16) % 16
+        val lx = (floor(x).toInt() % 16 + 16) % 16
+        val ly = (floor(y).toInt() % 16 + 16) % 16
+        val lz = (floor(z).toInt() % 16 + 16) % 16
 
         return chunk.getBlock(lx, ly, lz) != BlockType.AIR.id
     }
 
-    private fun checkCollision(pos: org.joml.Vector3f): Boolean {
+    private fun checkCollisionPlayer(pos: org.joml.Vector3f): Boolean {
         // Check multiple points around the player box to ensure they don't clip into corners
         for (xOffset in listOf(-playerWidth, playerWidth)) {
             for (zOffset in listOf(-playerWidth, playerWidth)) {
@@ -496,6 +592,18 @@ class Minecraft {
         return false
     }
 
+
+    fun checkCollisionAt(pos: org.joml.Vector3f, width: Float, height: Float): Boolean {
+        // Check corners of the bounding box
+        for (xOffset in listOf(-width, width)) {
+            for (zOffset in listOf(-width, width)) {
+                for (yOffset in listOf(0f, height)) {
+                    if (isSolid(pos.x + xOffset, pos.y - yOffset, pos.z + zOffset)) return true
+                }
+            }
+        }
+        return false
+    }
 
     private fun raycast(): RaycastResult? {
         val rayPos = org.joml.Vector3f(cameraPos)
@@ -567,16 +675,19 @@ class Minecraft {
 
 
     private fun updateChunks() {
-        val playerCX = Math.floor(cameraPos.x.toDouble() / 16.0).toInt()
-        val playerCZ = Math.floor(cameraPos.z.toDouble() / 16.0).toInt()
+        val playerCX = floor(cameraPos.x / 16.0).toInt()
+        val playerCZ = floor(cameraPos.z / 16.0).toInt()
 
         for (x in -renderDistance..renderDistance) {
             for (z in -renderDistance..renderDistance) {
-                val targetPos = Pair(playerCX + x, playerCZ + z)
-                if (!chunks.containsKey(targetPos)) {
-                    val newChunk = Chunk(targetPos.first, 0, targetPos.second)
-                    buildChunkMesh(newChunk)
-                    chunks[targetPos] = newChunk
+                // Stack 16 chunks vertically for every horizontal coordinate
+                for (y in 0 until 16) {
+                    val targetPos = Triple(playerCX + x, y, playerCZ + z)
+                    if (!chunks.containsKey(targetPos)) {
+                        val newChunk = Chunk(targetPos.first, targetPos.second, targetPos.third)
+                        buildChunkMesh(newChunk)
+                        chunks[targetPos] = newChunk
+                    }
                 }
             }
         }
@@ -698,6 +809,101 @@ class Minecraft {
         glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
         glEnableVertexAttribArray(1)
     }
+
+    private fun setupItemVao(): Int {
+        // 8 floats per vertex: X, Y, Z, U, V, NX, NY, NZ
+        val v = floatArrayOf(
+            // Front face (Z+)
+            0f, 0f, 1f,  0f, 0f,  0f, 0f, 1f,   1f, 0f, 1f,  1f, 0f,  0f, 0f, 1f,
+            1f, 1f, 1f,  1f, 1f,  0f, 0f, 1f,   1f, 1f, 1f,  1f, 1f,  0f, 0f, 1f,
+            0f, 1f, 1f,  0f, 1f,  0f, 0f, 1f,   0f, 0f, 1f,  0f, 0f,  0f, 0f, 1f,
+
+            // Back face (Z-)
+            0f, 0f, 0f,  0f, 0f,  0f, 0f,-1f,   0f, 1f, 0f,  0f, 1f,  0f, 0f,-1f,
+            1f, 1f, 0f,  1f, 1f,  0f, 0f,-1f,   1f, 1f, 0f,  1f, 1f,  0f, 0f,-1f,
+            1f, 0f, 0f,  1f, 0f,  0f, 0f,-1f,   0f, 0f, 0f,  0f, 0f,  0f, 0f,-1f,
+
+            // Left face (X-)
+            0f, 1f, 1f,  1f, 1f, -1f, 0f, 0f,   0f, 1f, 0f,  0f, 1f, -1f, 0f, 0f,
+            0f, 0f, 0f,  0f, 0f, -1f, 0f, 0f,   0f, 0f, 0f,  0f, 0f, -1f, 0f, 0f,
+            0f, 0f, 1f,  1f, 0f, -1f, 0f, 0f,   0f, 1f, 1f,  1f, 1f, -1f, 0f, 0f,
+
+            // Right face (X+)
+            1f, 1f, 1f,  1f, 1f,  1f, 0f, 0f,   1f, 0f, 1f,  1f, 0f,  1f, 0f, 0f,
+            1f, 0f, 0f,  0f, 0f,  1f, 0f, 0f,   1f, 0f, 0f,  0f, 0f,  1f, 0f, 0f,
+            1f, 1f, 0f,  0f, 1f,  1f, 0f, 0f,   1f, 1f, 1f,  1f, 1f,  1f, 0f, 0f,
+
+            // Top face (Y+)
+            0f, 1f, 0f,  0f, 1f,  0f, 1f, 0f,   0f, 1f, 1f,  0f, 0f,  0f, 1f, 0f,
+            1f, 1f, 1f,  1f, 0f,  0f, 1f, 0f,   1f, 1f, 1f,  1f, 0f,  0f, 1f, 0f,
+            1f, 1f, 0f,  1f, 1f,  0f, 1f, 0f,   0f, 1f, 0f,  0f, 1f,  0f, 1f, 0f,
+
+            // Bottom face (Y-)
+            0f, 0f, 0f,  0f, 1f,  0f,-1f, 0f,   1f, 0f, 0f,  1f, 1f,  0f,-1f, 0f,
+            1f, 0f, 1f,  1f, 0f,  0f,-1f, 0f,   1f, 0f, 1f,  1f, 0f,  0f,-1f, 0f,
+            0f, 0f, 1f,  0f, 0f,  0f,-1f, 0f,   0f, 0f, 0f,  0f, 1f,  0f,-1f, 0f
+        )
+
+        val vao = glGenVertexArrays()
+        glBindVertexArray(vao)
+        val vbo = glGenBuffers()
+        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        glBufferData(GL_ARRAY_BUFFER, v, GL_STATIC_DRAW)
+
+        val stride = 8 * 4
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, 20L)
+        glEnableVertexAttribArray(2)
+
+        return vao
+    }
+
+
+    private fun renderInventory(stack: java.nio.FloatBuffer) {
+        glDisable(GL_DEPTH_TEST)
+        val modelLoc = glGetUniformLocation(shaderProgram, "model")
+        val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
+        glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+
+        val startX = 400f
+        val startY = 300f
+        val slotSize = 50f
+
+        // 1. Render Main Inventory (9x3)
+        for (i in 0 until 27) {
+            val row = i / 9
+            val col = i % 9
+            val x = startX + col * slotSize
+            val y = startY + row * slotSize
+
+            drawItemInSlot(inventory.main[i], x, y, stack, modelLoc, uvOffsetLoc)
+        }
+
+        // 2. Render Hotbar (9x1) - positioned lower
+        val hotbarY = 650f
+        for (i in 0 until 9) {
+            val x = startX + i * slotSize
+            drawItemInSlot(inventory.hotbar[i], x, hotbarY, stack, modelLoc, uvOffsetLoc)
+        }
+    }
+
+    private fun drawItemInSlot(item: ItemStack?, x: Float, y: Float, stack: java.nio.FloatBuffer, modelLoc: Int, uvOffsetLoc: Int) {
+        val type = item?.type ?: return
+        val modelMatrix = org.joml.Matrix4f()
+            .translation(x, y, 0f)
+            .rotate(Math.toRadians(20.0).toFloat(), 1f, 0f, 0f)
+            .rotate(Math.toRadians(45.0).toFloat(), 0f, 1f, 0f)
+            .scale(25f) // Adjust size for slots
+
+        glUniformMatrix4fv(modelLoc, false, modelMatrix.get(stack))
+        glUniform2f(uvOffsetLoc, type.texX.toFloat(), type.texY.toFloat())
+        glBindVertexArray(itemVao)
+        glDrawArrays(GL_TRIANGLES, 0, 36) // Assuming cube VAO
+    }
+
 
     private fun cleanup() {
         glfwDestroyWindow(window)
