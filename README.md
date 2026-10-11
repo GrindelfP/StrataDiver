@@ -1,4 +1,4 @@
-# Kubold
+# StrataDiver
 
 A from-scratch voxel sandbox game written in **Kotlin** using **LWJGL 3** (GLFW + OpenGL) and **JOML** for math. No game engine — everything is implemented manually.
 
@@ -46,7 +46,7 @@ mvn compile
 ## Project Structure
 
 ```
-src/main/kotlin/to/grindelf/minecraft/
+src/main/kotlin/to/grindelf/stratadiver/
 ├── Main.kt        # Entry point, game loop, rendering, input, physics
 ├── World.kt       # BlockType, Chunk, MeshGenerator, PerlinNoise
 ├── Entity.kt      # Entity base class, DroppedItem

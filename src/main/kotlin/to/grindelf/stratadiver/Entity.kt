@@ -1,4 +1,4 @@
-package to.grindelf.minecraft
+package to.grindelf.stratadiver
 
 import org.lwjgl.opengl.ARBVertexArrayObject.glBindVertexArray
 import org.lwjgl.opengl.GL11.GL_TRIANGLES
@@ -19,7 +19,7 @@ abstract class Entity(
 
     abstract fun render(stack: java.nio.FloatBuffer, shaderProgram: Int, itemVao: Int)
 
-    fun update(world: Kubold) {
+    fun update(world: StrataDiver) {
         // Apply Gravity
         vel.y -= 0.015f // Matches player gravity
 

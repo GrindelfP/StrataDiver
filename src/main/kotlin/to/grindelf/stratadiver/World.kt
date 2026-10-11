@@ -1,4 +1,4 @@
-package to.grindelf.minecraft
+package to.grindelf.stratadiver
 
 import org.lwjgl.opengl.ARBVertexArrayObject.glDeleteVertexArrays
 import kotlin.math.floor

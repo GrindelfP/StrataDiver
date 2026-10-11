@@ -1,4 +1,4 @@
-package to.grindelf.minecraft
+package to.grindelf.stratadiver
 
 data class ItemStack(val type: BlockType, var count: Int)
 

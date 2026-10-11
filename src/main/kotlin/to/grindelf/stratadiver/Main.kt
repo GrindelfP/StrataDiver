@@ -1,4 +1,4 @@
-package to.grindelf.minecraft
+package to.grindelf.stratadiver
 
 import org.joml.Matrix4f
 import org.lwjgl.BufferUtils
@@ -14,11 +14,15 @@ import kotlin.math.floor
 
 
 fun main() {
-    Kubold().run()
+    StrataDiver().run()
 }
 
+enum class ControlMode {
+    GAMEPLAY,
+    INTERACTIVE
+}
 
-class Kubold {
+class StrataDiver {
 
     companion object {
         const val CONST_TIME: Boolean = true
@@ -76,6 +80,7 @@ class Kubold {
     private val inventory = Inventory()
     private var isInventoryOpen = false
     private var selectedSlot = 0 // 0 to 8 (Hotbar)
+    private var heldItem: ItemStack? = null
     private val hotbar = arrayOfNulls<BlockType>(9) // What is in the 9 slots
 
     // TEXTURES
@@ -83,6 +88,9 @@ class Kubold {
 
     // MINIMAP
     private var mapVao: Int = 0
+
+    // UI QUAD (unit quad for 2D GUI rendering)
+    private var uiQuadVao: Int = 0
 
     // ENTITIES
     private val entities = mutableListOf<Entity>()
@@ -100,19 +108,24 @@ class Kubold {
     }
 
     private fun safeSpawn() {
-        // Dynamically find the ground height at (5, 5)
         val spawnX = 5f
         val spawnZ = 5f
-        var spawnY = 130f // Fallback
+        var spawnY = 130f
 
-        // Look down from the top of the world to find the first solid block
         for (y in 255 downTo 0) {
             if (isSolid(spawnX, y.toFloat(), spawnZ)) {
-                spawnY = y.toFloat() + 2f // Place camera at eye level (2 blocks up)
+                spawnY = y.toFloat() + 2f
                 break
             }
         }
         cameraPos.set(spawnX, spawnY, spawnZ)
+
+        // Push up if spawned inside blocks (trees, steep terrain)
+        var attempts = 0
+        while (checkCollisionPlayer(cameraPos) && attempts < 20) {
+            cameraPos.y += 1f
+            attempts++
+        }
     }
 
 
@@ -184,8 +197,6 @@ class Kubold {
     private fun loop() {
         val stack = BufferUtils.createFloatBuffer(16)
 
-        val uiProjection = org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f)
-
         while (!glfwWindowShouldClose(window)) {
             // 1. Celestial Timing
             val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED;
@@ -232,6 +243,7 @@ class Kubold {
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, view.get(stack))
 
             // 8. Render World Chunks
+            glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 0)
             val modelMatrix = org.joml.Matrix4f()
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, modelMatrix.get(stack))
 
@@ -291,13 +303,11 @@ class Kubold {
 
             glEnable(GL_DEPTH_TEST)
 
-            // 12. RENDER UI Inventory
+            // 12. RENDER UI (Hotbar always, Inventory when open)
+            renderHotbar(stack)
             if (isInventoryOpen) {
-                // Switch to UI Projection
-                glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, uiProjection.get(stack))
-                glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, Matrix4f().get(stack)) // Identity view
-
                 renderInventory(stack)
+                renderHeldItem(stack)
             }
 
             // 13. Finalize Frame
@@ -307,6 +317,8 @@ class Kubold {
     }
 
     private fun processInput() {
+        if (isInventoryOpen) return
+
         val walkSpeed = 0.08f
         val moveDir = org.joml.Vector3f(0f, 0f, 0f)
 
@@ -414,7 +426,7 @@ class Kubold {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE)
 
-        window = glfwCreateWindow(1280, 720, "Kubold", NULL, NULL)
+        window = glfwCreateWindow(1280, 720, "StrataDiver", NULL, NULL)
         if (window == NULL) throw RuntimeException("Failed to create the GLFW window")
 
         glfwMakeContextCurrent(window)
@@ -457,11 +469,13 @@ class Kubold {
 
 
         itemVao = setupItemVao()
+        uiQuadVao = setupUIQuad()
 
         setupUI()
 
         // --- Mouse Movement Callback ---
         glfwSetCursorPosCallback(window) { _, xpos, ypos ->
+            if (isInventoryOpen) return@glfwSetCursorPosCallback
             if (firstMouse) {
                 lastX = xpos
                 lastY = ypos
@@ -488,7 +502,12 @@ class Kubold {
 
         // --- Mouse Click Callback (Updated for 3D Chunks) ---
         glfwSetMouseButtonCallback(window) { _, button, action, _ ->
-            if (action == GLFW_PRESS && selectedBlock != null) {
+            if (action != GLFW_PRESS) return@glfwSetMouseButtonCallback
+            if (isInventoryOpen) {
+                handleInventoryClick(button)
+                return@glfwSetMouseButtonCallback
+            }
+            if (selectedBlock != null) {
                 val result = selectedBlock!!
                 // FIX: Pass Y coordinate to find the correct vertical chunk
                 val targetChunk = getChunkAt(
@@ -519,18 +538,36 @@ class Kubold {
                         }
                     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                         val placePos = org.joml.Vector3i(result.blockPos).add(result.faceNormal)
-                        // FIX: Pass Y coordinate for placement chunk lookup
-                        val placeChunk = getChunkAt(
-                            placePos.x.toFloat(),
-                            placePos.y.toFloat(),
-                            placePos.z.toFloat()
-                        )
-                        if (placeChunk != null) {
-                            val plx = (placePos.x % 16 + 16) % 16
-                            val ply = (placePos.y % 16 + 16) % 16 // Local Y fix
-                            val plz = (placePos.z % 16 + 16) % 16
-                            placeChunk.setBlock(plx, ply, plz, BlockType.STONE)
-                            buildChunkMesh(placeChunk)
+                        // Prevent placing a block inside the player
+                        val playerMinX = cameraPos.x - playerWidth
+                        val playerMaxX = cameraPos.x + playerWidth
+                        val playerMinY = cameraPos.y - 1.6f
+                        val playerMaxY = cameraPos.y + 0.2f
+                        val playerMinZ = cameraPos.z - playerWidth
+                        val playerMaxZ = cameraPos.z + playerWidth
+                        val blockMinX = placePos.x.toFloat()
+                        val blockMaxX = placePos.x.toFloat() + 1f
+                        val blockMinY = placePos.y.toFloat()
+                        val blockMaxY = placePos.y.toFloat() + 1f
+                        val blockMinZ = placePos.z.toFloat()
+                        val blockMaxZ = placePos.z.toFloat() + 1f
+                        val intersectsPlayer = playerMaxX > blockMinX && playerMinX < blockMaxX &&
+                                playerMaxY > blockMinY && playerMinY < blockMaxY &&
+                                playerMaxZ > blockMinZ && playerMinZ < blockMaxZ
+                        if (!intersectsPlayer) {
+                            val placeChunk = getChunkAt(
+                                placePos.x.toFloat(),
+                                placePos.y.toFloat(),
+                                placePos.z.toFloat()
+                            )
+                            if (placeChunk != null) {
+                                val plx = (placePos.x % 16 + 16) % 16
+                                val ply = (placePos.y % 16 + 16) % 16
+                                val plz = (placePos.z % 16 + 16) % 16
+                                val placeType = inventory.hotbar[selectedSlot]?.type ?: BlockType.STONE
+                            placeChunk.setBlock(plx, ply, plz, placeType)
+                                buildChunkMesh(placeChunk)
+                            }
                         }
                     }
                 }
@@ -776,6 +813,174 @@ class Kubold {
         return id
     }
 
+    private fun setupUIQuad(): Int {
+        val vertices = floatArrayOf(
+            -0.5f, -0.5f, 0f,  0f, 0f,
+             0.5f, -0.5f, 0f,  1f, 0f,
+             0.5f,  0.5f, 0f,  1f, 1f,
+            -0.5f, -0.5f, 0f,  0f, 0f,
+             0.5f,  0.5f, 0f,  1f, 1f,
+            -0.5f,  0.5f, 0f,  0f, 1f
+        )
+
+        val vao = glGenVertexArrays()
+        glBindVertexArray(vao)
+        val vbo = glGenBuffers()
+        glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        glBufferData(GL_ARRAY_BUFFER, vertices, GL_STATIC_DRAW)
+
+        val stride = 5 * 4
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
+        glEnableVertexAttribArray(1)
+
+        return vao
+    }
+
+    private fun drawUIQuad(
+        stack: java.nio.FloatBuffer,
+        x: Float, y: Float, w: Float, h: Float,
+        texX: Int, texY: Int,
+        shaderProgram: Int
+    ) {
+        val modelLoc = glGetUniformLocation(shaderProgram, "model")
+        val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
+        val modelMatrix = org.joml.Matrix4f()
+            .translate(x + w / 2f, y + h / 2f, 0f)
+            .scale(w, h, 1f)
+        glUniformMatrix4fv(modelLoc, false, modelMatrix.get(stack))
+        glUniform2f(uvOffsetLoc, texX.toFloat(), texY.toFloat())
+        glBindVertexArray(uiQuadVao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+    }
+
+    private fun renderHotbar(stack: java.nio.FloatBuffer) {
+        val slotSize = 50f
+        val totalWidth = 9 * slotSize
+        val startX = (1280f - totalWidth) / 2f
+        val startY = 720f - slotSize - 10f
+
+        glDisable(GL_DEPTH_TEST)
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack))
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
+        glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+
+        for (i in 0 until 9) {
+            val x = startX + i * slotSize
+            drawUIQuad(stack, x, startY, slotSize, slotSize, 1, 1, shaderProgram)
+            if (i == selectedSlot) {
+                drawUIQuad(stack, x, startY, slotSize, slotSize, 2, 1, shaderProgram)
+            }
+            val item = inventory.hotbar[i]
+            if (item != null) {
+                drawUIQuad(stack, x + 5, startY + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
+            }
+        }
+
+        glEnable(GL_DEPTH_TEST)
+    }
+
+    private fun handleInventoryClick(button: Int) {
+        if (button != GLFW_MOUSE_BUTTON_LEFT) return
+
+        var mouseX = 0.0
+        var mouseY = 0.0
+        glfwGetCursorPos(window, doubleArrayOf(mouseX), doubleArrayOf(mouseY))
+
+        val slotSize = 50f
+        val totalWidth = 9 * slotSize
+        val startX = (1280f - totalWidth) / 2f
+        val mainStartY = 100f
+        val hotbarY = mainStartY + 3 * slotSize + 20f
+
+        for (i in 0 until 27) {
+            val row = i / 9
+            val col = i % 9
+            val x = startX + col * slotSize
+            val y = mainStartY + row * slotSize
+            if (mouseX in x..(x + slotSize) && mouseY in y..(y + slotSize)) {
+                handleSlotClick(inventory.main, i)
+                return
+            }
+        }
+
+        for (i in 0 until 9) {
+            val x = startX + i * slotSize
+            if (mouseX in x..(x + slotSize) && mouseY in hotbarY..(hotbarY + slotSize)) {
+                handleSlotClick(inventory.hotbar, i)
+                return
+            }
+        }
+    }
+
+    private fun handleSlotClick(slots: Array<ItemStack?>, index: Int) {
+        if (heldItem == null) {
+            heldItem = slots[index]
+            slots[index] = null
+        } else {
+            val existing = slots[index]
+            if (existing == null) {
+                slots[index] = heldItem
+                heldItem = null
+            } else if (existing.type == heldItem!!.type && existing.count < 64) {
+                val total = existing.count + heldItem!!.count
+                val toAdd = minOf(total, 64 - existing.count)
+                slots[index] = ItemStack(existing.type, existing.count + toAdd)
+                val remaining = total - existing.count - toAdd
+                heldItem = if (remaining > 0) ItemStack(heldItem!!.type, remaining) else null
+            }
+        }
+    }
+
+    private fun renderHeldItem(stack: java.nio.FloatBuffer) {
+        val item = heldItem ?: return
+        var mouseX = 0.0
+        var mouseY = 0.0
+        glfwGetCursorPos(window, doubleArrayOf(mouseX), doubleArrayOf(mouseY))
+        val size = 40f
+        drawUIQuad(stack, mouseX.toFloat() - size / 2, mouseY.toFloat() - size / 2, size, size, item.type.texX, item.type.texY, shaderProgram)
+    }
+
+    private fun renderInventory(stack: java.nio.FloatBuffer) {
+        val slotSize = 50f
+        val totalWidth = 9 * slotSize
+        val startX = (1280f - totalWidth) / 2f
+        val mainStartY = 100f
+        val hotbarY = mainStartY + 3 * slotSize + 20f
+
+        glDisable(GL_DEPTH_TEST)
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), false, org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack))
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
+        glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+
+        for (i in 0 until 27) {
+            val row = i / 9
+            val col = i % 9
+            val x = startX + col * slotSize
+            val y = mainStartY + row * slotSize
+            drawUIQuad(stack, x, y, slotSize, slotSize, 1, 1, shaderProgram)
+            val item = inventory.main[i]
+            if (item != null) {
+                drawUIQuad(stack, x + 5, y + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
+            }
+        }
+
+        for (i in 0 until 9) {
+            val x = startX + i * slotSize
+            drawUIQuad(stack, x, hotbarY, slotSize, slotSize, 1, 1, shaderProgram)
+            if (i == selectedSlot) {
+                drawUIQuad(stack, x, hotbarY, slotSize, slotSize, 2, 1, shaderProgram)
+            }
+            val item = inventory.hotbar[i]
+            if (item != null) {
+                drawUIQuad(stack, x + 5, hotbarY + 5, slotSize - 10, slotSize - 10, item.type.texX, item.type.texY, shaderProgram)
+            }
+        }
+
+        glEnable(GL_DEPTH_TEST)
+    }
+
     private fun setupMap() {
         val aspect = 1280f / 720f
         val size = 0.4f // Size of the map
@@ -859,49 +1064,6 @@ class Kubold {
         glEnableVertexAttribArray(2)
 
         return vao
-    }
-
-
-    private fun renderInventory(stack: java.nio.FloatBuffer) {
-        glDisable(GL_DEPTH_TEST)
-        val modelLoc = glGetUniformLocation(shaderProgram, "model")
-        val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
-        glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
-
-        val startX = 400f
-        val startY = 300f
-        val slotSize = 50f
-
-        // 1. Render Main Inventory (9x3)
-        for (i in 0 until 27) {
-            val row = i / 9
-            val col = i % 9
-            val x = startX + col * slotSize
-            val y = startY + row * slotSize
-
-            drawItemInSlot(inventory.main[i], x, y, stack, modelLoc, uvOffsetLoc)
-        }
-
-        // 2. Render Hotbar (9x1) - positioned lower
-        val hotbarY = 650f
-        for (i in 0 until 9) {
-            val x = startX + i * slotSize
-            drawItemInSlot(inventory.hotbar[i], x, hotbarY, stack, modelLoc, uvOffsetLoc)
-        }
-    }
-
-    private fun drawItemInSlot(item: ItemStack?, x: Float, y: Float, stack: java.nio.FloatBuffer, modelLoc: Int, uvOffsetLoc: Int) {
-        val type = item?.type ?: return
-        val modelMatrix = org.joml.Matrix4f()
-            .translation(x, y, 0f)
-            .rotate(Math.toRadians(20.0).toFloat(), 1f, 0f, 0f)
-            .rotate(Math.toRadians(45.0).toFloat(), 0f, 1f, 0f)
-            .scale(25f) // Adjust size for slots
-
-        glUniformMatrix4fv(modelLoc, false, modelMatrix.get(stack))
-        glUniform2f(uvOffsetLoc, type.texX.toFloat(), type.texY.toFloat())
-        glBindVertexArray(itemVao)
-        glDrawArrays(GL_TRIANGLES, 0, 36) // Assuming cube VAO
     }
 
 

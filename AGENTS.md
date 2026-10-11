@@ -4,8 +4,8 @@
 
 A from-scratch voxel sandbox game in **Kotlin** using **LWJGL 3** (GLFW + OpenGL) and **JOML** for math. No game engine — everything is implemented manually.
 
-- **Package**: `to.grindelf.minecraft`
-- **Source**: `src/main/kotlin/to/grindelf/minecraft/`
+- **Package**: `to.grindelf.stratadiver`
+- **Source**: `src/main/kotlin/to/grindelf/stratadiver/`
 - **Shaders**: `src/main/resources/shaders/`
 - **Build**: Maven (`pom.xml`)
 
@@ -38,7 +38,7 @@ There are **no tests** in this project yet.
 
 | File | Purpose |
 |------|---------|
-| `Main.kt` | Entry point (`fun main()`), game loop, rendering, input, physics, camera, block interaction (class `Kubold`) |
+| `Main.kt` | Entry point (`fun main()`), game loop, rendering, input, physics, camera, block interaction (class `StrataDiver`) |
 | `World.kt` | `BlockType` enum, `Chunk` class (16×16×16), `MeshGenerator`, `PerlinNoise`, `FastNoise` |
 | `Entity.kt` | `Entity` abstract class, `DroppedItem` |
 | `Inventory.kt` | `ItemStack`, `Inventory` (hotbar + main) |
