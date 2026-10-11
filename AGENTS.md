@@ -24,9 +24,13 @@ A from-scratch voxel sandbox game in **Kotlin** using **LWJGL 3** (GLFW + OpenGL
 ## Build & Run
 
 ```bash
-mvn compile          # compile only
-mvn exec:java        # compile + run (needs exec-maven-plugin or use exec:java -Dexec.mainClass)
+JAVA_HOME=$(/usr/libexec/java_home -v 23) mvn compile   # compile only
+JAVA_HOME=$(/usr/libexec/java_home -v 23) mvn exec:exec # run the game
 ```
+
+Kotlin 1.9.0 does not support Java 27 (the system default). You **must** use JDK 23 (Azul Zulu) via `JAVA_HOME` or the build fails with `IllegalArgumentException: 27`.
+
+On macOS, GLFW requires `-XstartOnFirstThread`. The `exec:exec` goal forks a new JVM process with this flag. Do **not** use `exec:java` — it runs in the same JVM and GLFW will crash.
 
 There are **no tests** in this project yet.
 
