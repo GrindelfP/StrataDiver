@@ -1071,18 +1071,47 @@ class StrataDiver {
         glEnable(GL_DEPTH_TEST)
     }
 
-    // Seven-segment layout: a=top b=upper-right c=lower-right d=bottom
-    // e=lower-left f=upper-left g=middle.
-    private val SEGMENTS = intArrayOf(
-        0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
-        0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111
+    // Seven-segment layout:
+    //
+    //     aaa
+    //    f   b
+    //    f   b
+    //     ggg
+    //    e   c
+    //    e   c
+    //     ddd
+    //
+    // Written as segment names rather than bitmasks. Hand-written masks were wrong for
+    // nine of the ten digits, which is exactly the class of bug naming makes obvious.
+    private val SEGMENT_DIGITS = arrayOf(
+        "abcdef",  // 0
+        "bc",      // 1
+        "abdeg",   // 2
+        "abcdg",   // 3
+        "bcfg",    // 4
+        "acdfg",   // 5
+        "acdefg",  // 6
+        "abc",     // 7
+        "abcdefg", // 8
+        "abcdfg"   // 9
     )
+
+    /** Bitmask for [digit], with bit 6 = segment a, down to bit 0 = segment g. */
+    private fun segmentMask(digit: Int): Int {
+        val name = SEGMENT_DIGITS[digit]
+        var mask = 0
+        for (ch in name) {
+            val index = "abcdefg".indexOf(ch)
+            mask = mask or (1 shl (6 - index))
+        }
+        return mask
+    }
 
     private fun drawSevenSegmentDigit(
         stack: java.nio.FloatBuffer, x: Float, y: Float, w: Float, h: Float, digit: Int
     ) {
         if (digit !in 0..9) return
-        val seg = SEGMENTS[digit]
+        val seg = segmentMask(digit)
         val t = (h * 0.14f).coerceAtLeast(2f) // segment thickness
         val half = (h - t) / 2f
 
