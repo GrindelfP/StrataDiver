@@ -310,30 +310,14 @@ class StrataDiver {
 //            glBindVertexArray(mapVao)
 //            glDrawArrays(GL_TRIANGLES, 0, 6)
 
-            // --- 11. Render UI (Crosshair) ---
-            // Turn map mode OFF so crosshair doesn't get circular-masked or noise-colored
-            glUniform1i(isMapLoc, 0)
-
-            // The crosshair is a cutout GUI element: draw it unlit, at full brightness,
-            // pinned to the camera. Without an explicit model matrix it inherits whatever
-            // the last draw left behind — which is how it ended up drawn at the block you
-            // were looking at instead of at screen centre.
-            glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
-            glUniform3f(glGetUniformLocation(shaderProgram, "tint"), 1f, 1f, 1f)
-            glUniformMatrix4fv(
-                glGetUniformLocation(shaderProgram, "model"), false,
-                org.joml.Matrix4f().translate(cameraPos).get(stack)
-            )
-            glBindVertexArray(crosshairVao)
-            glDrawArrays(GL_TRIANGLES, 0, 6)
-
-            glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
-            glUniformMatrix4fv(
-                glGetUniformLocation(shaderProgram, "model"), false,
-                org.joml.Matrix4f().get(stack)
-            )
-
+            // --- 11. RENDER UI ---
+            // The crosshair is drawn in the orthographic GUI pass below, not in the world
+            // pass: a world-space quad pinned to the camera sits exactly on the near
+            // plane and gets clipped, which is why it never appeared.
             glEnable(GL_DEPTH_TEST)
+
+            renderCrosshair(stack)
+            renderFps(stack)
 
             // 12. RENDER UI (Hotbar always, Inventory when open)
             renderHotbar(stack)
@@ -948,9 +932,11 @@ class StrataDiver {
             val e = (p1x + p3x) / 2f
             val f = (p1y + p3y) / 2f
 
+            // JOML's set(column, row, value): x' = m00*x + m10*y + m30, y' = m01*x + m11*y + m31.
+            // So the x-row (column 0) carries (a, b) and the y-row (column 1) carries (c, d).
             val m = org.joml.Matrix4f()
-            m.set(0, 0, a); m.set(0, 1, c)
-            m.set(1, 0, b); m.set(1, 1, d)
+            m.set(0, 0, a); m.set(0, 1, b)
+            m.set(1, 0, c); m.set(1, 1, d)
             m.set(3, 0, e); m.set(3, 1, f)
             glUniformMatrix4fv(modelLoc, false, m.get(stack))
             glUniform2f(uvOffsetLoc, tile.tx.toFloat(), tile.ty.toFloat())
@@ -975,6 +961,152 @@ class StrataDiver {
         face(cx, cy + h, right, cy, cx, cy + h + sideH, type.tile(Face.EAST), 0.55f)
         // Top face, the diamond: bottom corner first so the fourth vertex is the apex.
         face(cx, cy + h, right, cy, left, cy, type.tile(Face.TOP), 1.0f)
+    }
+
+    /**
+     * Screen-centre crosshair, drawn in the orthographic GUI pass. The crosshair tile is
+     * a cutout, so only the cross itself is opaque and the rest is discarded.
+     */
+    private fun renderCrosshair(stack: java.nio.FloatBuffer) {
+        val size = 20f
+        val cx = 1280f / 2f
+        val cy = 720f / 2f
+
+        glDisable(GL_DEPTH_TEST)
+        glUniformMatrix4fv(
+            glGetUniformLocation(shaderProgram, "projection"), false,
+            org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack)
+        )
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
+        glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
+        drawUIQuad(stack, cx - size / 2f, cy - size / 2f, size, size, Atlas.CROSSHAIR, shaderProgram)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
+        glEnable(GL_DEPTH_TEST)
+    }
+
+    /** Rolling average frames per second, for the HUD readout. */
+    private val frameTimes = FloatArray(30)
+    private var frameTimeIndex = 0
+    private var frameTimeCount = 0
+    private var lastFrameNanos: Long = 0L
+
+    private fun updateFps(): Float {
+        val now = System.nanoTime()
+        if (lastFrameNanos != 0L) {
+            val dt = (now - lastFrameNanos) / 1_000_000_000f
+            frameTimes[frameTimeIndex] = dt
+            frameTimeIndex = (frameTimeIndex + 1) % frameTimes.size
+            if (frameTimeCount < frameTimes.size) frameTimeCount++
+        }
+        lastFrameNanos = now
+        if (frameTimeCount == 0) return 0f
+        var sum = 0f
+        for (i in 0 until frameTimeCount) sum += frameTimes[i]
+        val avg = sum / frameTimeCount
+        return if (avg > 0f) 1f / avg else 0f
+    }
+
+    /**
+     * FPS readout, top-left. Drawn as seven-segment digits assembled from solid quads,
+     * so it needs no font and no extra atlas tiles.
+     */
+    private fun renderFps(stack: java.nio.FloatBuffer) {
+        val fps = updateFps()
+        if (fps <= 0f) return
+        val text = fps.toInt().toString()
+        val digits = if (text.length >= 2) text else "0$text"
+
+        val digitW = 22f
+        val digitH = 32f
+        val spacing = 6f
+        var x = 10f
+        val y = 10f
+
+        glDisable(GL_DEPTH_TEST)
+        glUniformMatrix4fv(
+            glGetUniformLocation(shaderProgram, "projection"), false,
+            org.joml.Matrix4f().ortho(0f, 1280f, 720f, 0f, -1f, 1f).get(stack)
+        )
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), false, org.joml.Matrix4f().get(stack))
+        glUniform1i(glGetUniformLocation(shaderProgram, "isEntity"), 1)
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 1)
+
+        for (ch in digits) {
+            if (ch == ' ') {
+                x += digitW + spacing
+                continue
+            }
+            drawSevenSegmentDigit(stack, x, y, digitW, digitH, ch - '0')
+            x += digitW + spacing
+        }
+
+        // "FPS" label, three letters drawn from the same segment font.
+        var lx = x + spacing
+        for (ch in "FPS") {
+            drawLetter(stack, lx, y + digitH - 12f, digitW, 12f, ch)
+            lx += digitW + spacing
+        }
+
+        glUniform1i(glGetUniformLocation(shaderProgram, "isGui"), 0)
+        glEnable(GL_DEPTH_TEST)
+    }
+
+    // Seven-segment layout: a=top b=upper-right c=lower-right d=bottom
+    // e=lower-left f=upper-left g=middle.
+    private val SEGMENTS = intArrayOf(
+        0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
+        0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111
+    )
+
+    private fun drawSevenSegmentDigit(
+        stack: java.nio.FloatBuffer, x: Float, y: Float, w: Float, h: Float, digit: Int
+    ) {
+        if (digit !in 0..9) return
+        val seg = SEGMENTS[digit]
+        val t = (h * 0.14f).coerceAtLeast(2f) // segment thickness
+        val half = (h - t) / 2f
+
+        // [x, y, w, h] per segment a..g
+        val bars = arrayOf(
+            floatArrayOf(x + t, y, w - 2 * t, t),                 // a top
+            floatArrayOf(x + w - t, y + t, t, half - t),          // b upper right
+            floatArrayOf(x + w - t, y + half + t, t, half - t),   // c lower right
+            floatArrayOf(x + t, y + h - t, w - 2 * t, t),         // d bottom
+            floatArrayOf(x, y + half + t, t, half - t),           // e lower left
+            floatArrayOf(x, y + t, t, half - t),                  // f upper left
+            floatArrayOf(x + t, y + h / 2f - t / 2f, w - 2 * t, t) // g middle
+        )
+        for (i in bars.indices) {
+            if ((seg shr (6 - i)) and 1 == 0) continue
+            val b = bars[i]
+            drawUIQuad(stack, b[0], b[1], b[2], b[3], Atlas.LINE, shaderProgram, 0.85f)
+        }
+    }
+
+    /** Minimal letterforms for the FPS label, built from bars. */
+    private fun drawLetter(
+        stack: java.nio.FloatBuffer, x: Float, y: Float, w: Float, h: Float, ch: Char
+    ) {
+        val t = (h * 0.22f).coerceAtLeast(1.5f)
+        fun bar(bx: Float, by: Float, bw: Float, bh: Float) =
+            drawUIQuad(stack, x + bx, y + by, bw, bh, Atlas.LINE, shaderProgram, 0.7f)
+
+        when (ch) {
+            'F' -> {
+                bar(0f, 0f, t, h); bar(0f, 0f, w, t); bar(0f, h / 2f, w - t, t)
+            }
+            'P' -> {
+                bar(0f, 0f, t, h); bar(0f, 0f, w - t, t); bar(w - t, 0f, t, h / 2f)
+                bar(0f, h / 2f - t / 2f, w - t, t)
+            }
+            'S' -> {
+                bar(t, 0f, w - 2 * t, t); bar(0f, t, t, h / 2f - t)
+                bar(t, h / 2f - t / 2f, w - 2 * t, t)
+                bar(w - t, h / 2f, t, h / 2f - t); bar(t, h - t, w - 2 * t, t)
+            }
+            else -> Unit
+        }
     }
 
     private fun renderHotbar(stack: java.nio.FloatBuffer) {

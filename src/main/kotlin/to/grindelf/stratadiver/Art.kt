@@ -364,8 +364,12 @@ object Art {
         val pad = Atlas.PAD
 
         // 1. Art -> upscaled tile.
+        //
+        // Art row 0 is the TOP of the tile as seen on a block face, but OpenGL's v=0 is
+        // the BOTTOM of the uploaded image. Rows are therefore written bottom-up; without
+        // this every tile renders vertically mirrored (e.g. grass fringe at the bottom).
         for (ay in 0 until Atlas.ART_PX) {
-            val row = art.rows[ay]
+            val row = art.rows[Atlas.ART_PX - 1 - ay]
             for (ax in 0 until Atlas.ART_PX) {
                 val ch = row[ax]
                 val isHole = ch == art.transparent

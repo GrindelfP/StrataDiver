@@ -90,6 +90,9 @@ enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<F
 class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     companion object {
         const val SIZE = 16
+
+        // Shortest trunk worth growing: below this a tree reads as a stump.
+        const val MIN_TREE_HEIGHT = 3
     }
 
     // 1D array to represent 3D space (x * size*size + y * size + z)
@@ -157,8 +160,17 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 
 
     private fun addSimpleTree(tx: Int, ty: Int, tz: Int) {
-        // Trunk: 4 or 5 blocks, so trees vary in height.
-        val trunkHeight = 4 + (Math.random() * 2).toInt()
+        // How many blocks of vertical room the tree can actually use in this chunk.
+        // Growing into the top edge would produce a flat-topped trunk that looks broken
+        // from above, so a tree that cannot fit whole is not grown at all.
+        val headroom = SIZE - ty
+        if (headroom < MIN_TREE_HEIGHT) return
+
+        // Trunk: 4 or 5 blocks, but never more than the chunk has room for, leaving
+        // space above the trunk for the canopy cap.
+        val trunkHeight = minOf(4 + (Math.random() * 2).toInt(), headroom - 2)
+        if (trunkHeight < MIN_TREE_HEIGHT) return
+
         for (i in 0..trunkHeight) {
             setBlock(tx, ty + i, tz, BlockType.WOOD)
         }
