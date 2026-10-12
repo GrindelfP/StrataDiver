@@ -66,6 +66,39 @@ There are **no tests** in this project yet.
 `CONTEXT.md` is the **domain glossary** (shared vocabulary — keep it free of implementation
 detail). Session history lives in `docs/session-log.md`.
 
+### Updating the session log
+
+**Append to `docs/session-log.md` as part of finishing any work, not afterwards as an
+afterthought.** One line per entry, format:
+
+```
+YYYY-MM-DD, HH:MM, [TAG] What was found, what was changed, and why.
+```
+
+- Timestamp with `date "+%Y-%m-%d, %H:%M"`.
+- Tag the entry `[INIT]` / `[FEATURE]` / `[UPDATE]` / `[BUGFIX]` / `[DELETE]` to match the commit.
+- **Record the diagnosis, not just the change.** Past entries earn their value by naming the
+  actual cause — "the SEGMENTS table was hand-written as bitmasks and was wrong for 9 of the
+  10 digits" is useful a year later; "fixed FPS counter" is not.
+- **Record regressions and the lesson**, including when the mistake was mine. The blue-sky
+  regression exists in the log because it teaches more than the fix does.
+- Append, never rewrite: the log is a record of what actually happened.
+
+### Verifying changes before declaring them done
+
+Compiling is not verification. This project has no test suite and its rendering path needs a
+GL context, so pick the strongest check available and say plainly what it could not cover.
+
+- **Anything not touching GL** can be exercised headlessly. `Chunk`'s constructor and
+  `MeshGenerator` make no GL calls, so they can be driven from a scratch main class on
+  `target/classes` to assert real numbers (vertex counts, determinism across regeneration).
+- **Anything touching GL** cannot be verified without the window. Say so, and ask the user to
+  run it. Do not let "it compiles" stand in for "it works" — that is how a change shipped that
+  rendered the entire world as sky.
+- **Localise before fixing.** When something breaks, use what still works to bound the fault:
+  if physics and raycasting are fine but nothing renders, the data is fine and the fault is in
+  the draw path.
+
 ## Agent skills
 
 ### Issue tracker
