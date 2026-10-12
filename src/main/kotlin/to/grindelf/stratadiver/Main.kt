@@ -579,14 +579,15 @@ class StrataDiver {
                     targetChunk.setBlock(lx, ly, lz, BlockType.AIR)
                     buildChunkMesh(targetChunk)
 
-                    // Leaves Drop nothing: a canopy is large, and filling all 36 slots
-                    // with leaf blocks would be worse than useless.
-                    if (type != BlockType.LEAVES) {
+                    // A Block Type decides what it Drops: grass Drops dirt, leaves Drop
+                    // nothing (AIR), and everything else Drops itself.
+                    val drop = type.drop
+                    if (drop != BlockType.AIR) {
                         entities.add(DroppedItem(org.joml.Vector3f(
                             result.blockPos.x + 0.5f,
                             result.blockPos.y + 0.5f,
                             result.blockPos.z + 0.5f
-                        ), type))
+                        ), drop))
                     }
                 }
             } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
@@ -945,10 +946,12 @@ class StrataDiver {
             glDrawArrays(GL_TRIANGLES, 0, 6)
         }
 
-        // Classic 2:1 isometric cube, sized so the whole silhouette fits the given box.
+        // Classic 2:1 isometric cube. The silhouette is deliberately taller than the
+        // old 2:1 face proportions: a cube's Icon should read as a cube at 40px,
+        // so the two side faces are given roughly a third of the height each.
         val w = size
         val h = size / 4f        // vertical half-diagonal of the top diamond
-        val sideH = size * 0.36f // height of the side faces
+        val sideH = size * 0.55f // height of the side faces
         val totalH = 2f * h + sideH
         val cx = x + size / 2f
         val cy = y + (size - totalH) / 2f + h // centre the silhouette in the box
@@ -990,7 +993,17 @@ class StrataDiver {
     private var frameTimeIndex = 0
     private var frameTimeCount = 0
     private var lastFrameNanos: Long = 0L
+    private var displayedFps = 0f
+    private var lastFpsUpdateNanos = 0L
 
+    // How often the readout refreshes. The average is sampled every frame, but a number
+    // changing 60+ times a second is unreadable, so it is only redrawn at this interval.
+    private val fpsRefreshMs = 250L
+
+    /**
+     * Samples the frame time every frame but only returns a new value every
+     * [FPS_REFRESH_MS] milliseconds, so the digits stay legible.
+     */
     private fun updateFps(): Float {
         val now = System.nanoTime()
         if (lastFrameNanos != 0L) {
@@ -1000,11 +1013,17 @@ class StrataDiver {
             if (frameTimeCount < frameTimes.size) frameTimeCount++
         }
         lastFrameNanos = now
-        if (frameTimeCount == 0) return 0f
-        var sum = 0f
-        for (i in 0 until frameTimeCount) sum += frameTimes[i]
-        val avg = sum / frameTimeCount
-        return if (avg > 0f) 1f / avg else 0f
+
+        if (now - lastFpsUpdateNanos >= fpsRefreshMs * 1_000_000L) {
+            if (frameTimeCount > 0) {
+                var sum = 0f
+                for (i in 0 until frameTimeCount) sum += frameTimes[i]
+                val avg = sum / frameTimeCount
+                displayedFps = if (avg > 0f) 1f / avg else 0f
+            }
+            lastFpsUpdateNanos = now
+        }
+        return displayedFps
     }
 
     /**

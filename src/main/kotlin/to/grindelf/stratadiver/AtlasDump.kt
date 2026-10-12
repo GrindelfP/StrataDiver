@@ -114,7 +114,7 @@ object AtlasDump {
             val x = sx + inset; val y = sy + inset
             val iw = icon.toFloat()
             val ih = iw / 4f
-            val sideH = iw * 0.36f
+            val sideH = iw * 0.55f
             val totalH = 2f * ih + sideH
             val cx = x + iw / 2f
             val cy = y + (iw - totalH) / 2f + ih

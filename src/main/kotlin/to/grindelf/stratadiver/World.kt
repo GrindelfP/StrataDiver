@@ -78,6 +78,18 @@ enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<F
     /** Side tile, used for Icons and dropped items. */
     val primary: TileRef get() = tile(Face.NORTH)
 
+    /**
+     * What this Block Type Drops when destroyed. Grass Drops Dirt, because a grass block
+     * is a thin soil layer over dirt and the grass itself is not collected. Everything
+     * else Drops itself; LEAVES Drops AIR, meaning nothing at all.
+     */
+    val drop: BlockType
+        get() = when (this) {
+            GRASS -> DIRT
+            LEAVES -> AIR
+            else -> this
+        }
+
     val texX: Int get() = primary.tx
     val texY: Int get() = primary.ty
 
