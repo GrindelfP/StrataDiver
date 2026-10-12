@@ -879,13 +879,13 @@ class StrataDiver {
     }
 
     private fun buildChunkMesh(c: Chunk) {
+        // Release the previous mesh first — this also clears vertexCount, so it has
+        // to happen before the new count is computed, not after.
+        c.releaseMesh()
+
         val vertices = MeshGenerator.generateChunkMesh(c)
         // IMPORTANT: Now using 8 floats per vertex (Pos:3, UV:2, Normal:3)
         c.vertexCount = vertices.size / 8
-
-        // Release the previous mesh first. Without this, every break and every place
-        // leaks a VAO and its VBO for the lifetime of the session.
-        c.releaseMesh()
 
         // Most of the world is air — most of the vertical band above the terrain is
         // nothing but. An all-air Chunk has no geometry at all, so it gets no GPU
