@@ -32,6 +32,9 @@ class StrataDiver {
         const val QUICK_DAY_SPEED: Float = 0.0174f
         const val MINECRAFT_DAY_SPEED: Float = 0.0052f
         const val DAY_SPEED: Float = QUICK_DAY_SPEED
+
+        // The world is 16 stacked Chunks of 16 Cells, from Y=0 to Y=256.
+        const val WORLD_HEIGHT_CHUNKS: Int = 16
     }
 
     private var window: Long = 0
@@ -60,7 +63,28 @@ class StrataDiver {
 
 
     private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
-    private val renderDistance = 4 // Chunks in every direction
+
+    /**
+     * The subset of [chunks] that currently holds GPU memory.
+     *
+     * Everything else has had its mesh released but keeps its Cells. This is the
+     * reason frame cost stays flat as you explore: only what is near the player
+     * is ever drawn, and leaving a Chunk behind genuinely frees it instead of
+     * quietly growing an unbounded backlog that gets submitted every frame.
+     */
+    private val meshedChunks = mutableSetOf<Chunk>()
+
+    private val renderDistance = 4 // Chunks in every direction, horizontally
+
+    // Vertical reach. Far smaller than the world's 16 layers because terrain lives
+    // in a narrow altitude band — loading all of them was most of the cost for no
+    // visible gain.
+    private val verticalRenderDistance = 3
+
+    // Streaming budget. Meshing is the expensive part of crossing a chunk
+    // boundary, so only this many per frame: the gap at the edge of vision fills
+    // in over a couple of frames instead of the game hitching.
+    private val maxChunkMeshesPerFrame = 8
 
     // PHYSICS
     private var velocity = org.joml.Vector3f(0f, 0f, 0f)
@@ -111,8 +135,11 @@ class StrataDiver {
 
     fun run() {
         init()
-        updateChunks()
+        // Place the player *before* the first streaming pass. Streaming works from
+        // the camera's chunk position, so streaming first would mesh the band
+        // around the default spawn height and then immediately throw all of it away.
         safeSpawn()
+        updateChunks()
         setupSelectionBox()
         setupMap()
         loop()
@@ -259,11 +286,12 @@ class StrataDiver {
             val modelMatrix = org.joml.Matrix4f()
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), false, modelMatrix.get(stack))
 
-            chunks.values.forEach { chunk ->
-                if (chunk.isMeshGenerated) {
-                    glBindVertexArray(chunk.vao)
-                    glDrawArrays(GL_TRIANGLES, 0, chunk.vertexCount)
-                }
+            // Only the meshed neighbourhood is drawn — never every Chunk the player
+            // has ever visited. This is the loop that used to grow without bound.
+            for (chunk in meshedChunks) {
+                if (chunk.vertexCount == 0) continue
+                glBindVertexArray(chunk.vao)
+                glDrawArrays(GL_TRIANGLES, 0, chunk.vertexCount)
             }
 
             // 8.5 Render Entities
@@ -560,7 +588,7 @@ class StrataDiver {
         if (selectedBlock == null) return
         val result = selectedBlock!!
         // Pass Y coordinate to find the correct vertical chunk
-        val targetChunk = getChunkAt(
+        val targetChunk = getOrCreateChunk(
             result.blockPos.x.toFloat(),
             result.blockPos.y.toFloat(),
             result.blockPos.z.toFloat()
@@ -609,7 +637,7 @@ class StrataDiver {
                         playerMaxY > blockMinY && playerMinY < blockMaxY &&
                         playerMaxZ > blockMinZ && playerMinZ < blockMaxZ
                 if (!intersectsPlayer) {
-                    val placeChunk = getChunkAt(
+                    val placeChunk = getOrCreateChunk(
                         placePos.x.toFloat(),
                         placePos.y.toFloat(),
                         placePos.z.toFloat()
@@ -660,16 +688,27 @@ class StrataDiver {
     }
 
 
-    private fun getChunkAt(x: Float, y: Float, z: Float): Chunk? {
-        val cx = floor(x / 16.0).toInt()
-        val cy = floor(y / 16.0).toInt()
-        val cz = floor(z / 16.0).toInt()
-        return chunks[Triple(cx, cy, cz)]
+    /**
+     * The Chunk containing this position, generated on first touch.
+     *
+     * Returning null means only "outside the world" — never "not loaded yet".
+     * That distinction matters: with a finite vertical band, a missing Chunk used
+     * to read as open air, which would let physics and the raycast see straight
+     * through ground the streamer simply had not reached. Generation is
+     * deterministic, so a Chunk born here is identical to one the streamer builds
+     * moments later — the player can never stand on terrain that reshapes after.
+     */
+    private fun getOrCreateChunk(x: Float, y: Float, z: Float): Chunk? {
+        val cx = floor(x / Chunk.SIZE).toInt()
+        val cy = floor(y / Chunk.SIZE).toInt()
+        val cz = floor(z / Chunk.SIZE).toInt()
+        if (cy < 0 || cy >= WORLD_HEIGHT_CHUNKS) return null
+        return chunks.getOrPut(Triple(cx, cy, cz)) { Chunk(cx, cy, cz) }
     }
 
     // Update your existing isSolid to check the correct chunk
     private fun isSolid(x: Float, y: Float, z: Float): Boolean {
-        val chunk = getChunkAt(x, y, z) ?: return false
+        val chunk = getOrCreateChunk(x, y, z) ?: return false
 
         val lx = (floor(x).toInt() % 16 + 16) % 16
         val ly = (floor(y).toInt() % 16 + 16) % 16
@@ -778,22 +817,64 @@ class StrataDiver {
     }
 
 
+    /**
+     * Brings the meshed neighbourhood back in line with where the player is standing.
+     *
+     * Releasing is unconditional and immediate; building is rationed. Together they
+     * keep both the GPU footprint and the per-frame draw list bounded by the render
+     * distance rather than by how far the player has ever walked.
+     */
     private fun updateChunks() {
-        val playerCX = floor(cameraPos.x / 16.0).toInt()
-        val playerCZ = floor(cameraPos.z / 16.0).toInt()
+        val playerCX = floor(cameraPos.x / Chunk.SIZE).toInt()
+        val playerCY = floor(cameraPos.y / Chunk.SIZE).toInt()
+        val playerCZ = floor(cameraPos.z / Chunk.SIZE).toInt()
 
+        // Everything within reach right now.
+        val wanted = HashSet<Triple<Int, Int, Int>>()
         for (x in -renderDistance..renderDistance) {
             for (z in -renderDistance..renderDistance) {
-                // Stack 16 chunks vertically for every horizontal coordinate
-                for (y in 0 until 16) {
-                    val targetPos = Triple(playerCX + x, y, playerCZ + z)
-                    if (!chunks.containsKey(targetPos)) {
-                        val newChunk = Chunk(targetPos.first, targetPos.second, targetPos.third)
-                        buildChunkMesh(newChunk)
-                        chunks[targetPos] = newChunk
-                    }
+                for (y in -verticalRenderDistance..verticalRenderDistance) {
+                    val cy = playerCY + y
+                    if (cy < 0 || cy >= WORLD_HEIGHT_CHUNKS) continue
+                    wanted.add(Triple(playerCX + x, cy, playerCZ + z))
                 }
             }
+        }
+
+        // Release what fell out of reach. Its Cells stay in `chunks`.
+        val iterator = meshedChunks.iterator()
+        while (iterator.hasNext()) {
+            val c = iterator.next()
+            if (c.position !in wanted) {
+                c.releaseMesh()
+                iterator.remove()
+            }
+        }
+
+        // Build what came into reach, nearest first so the world closes in around
+        // the player rather than filling in from the far edge inward.
+        //
+        // `meshedPositions` is snapshotted rather than querying the set per wanted
+        // Chunk: with ~570 in reach, scanning the set each time would be a few
+        // hundred thousand comparisons every single frame.
+        val meshedPositions = HashSet<Triple<Int, Int, Int>>(meshedChunks.size * 2)
+        for (c in meshedChunks) meshedPositions.add(c.position)
+
+        var built = 0
+        val missing = wanted
+            .filter { it !in meshedPositions }
+            .sortedBy { (cx, cy, cz) ->
+                val dx = cx - playerCX
+                val dy = cy - playerCY
+                val dz = cz - playerCZ
+                dx * dx + dy * dy + dz * dz
+            }
+        for (pos in missing) {
+            if (built >= maxChunkMeshesPerFrame) break
+            val c = chunks.getOrPut(pos) { Chunk(pos.first, pos.second, pos.third) }
+            buildChunkMesh(c)
+            meshedChunks.add(c)
+            built++
         }
     }
 
@@ -804,9 +885,16 @@ class StrataDiver {
 
         // Release the previous mesh first. Without this, every break and every place
         // leaks a VAO and its VBO for the lifetime of the session.
-        if (c.vao != -1) {
-            glDeleteVertexArrays(c.vao)
-            if (c.vbo != -1) glDeleteBuffers(c.vbo)
+        c.releaseMesh()
+
+        // Most of the world is air — most of the vertical band above the terrain is
+        // nothing but. An all-air Chunk has no geometry at all, so it gets no GPU
+        // object and no draw call; it is still recorded as meshed so the streamer
+        // does not rebuild it on every single frame.
+        if (c.vertexCount == 0) {
+            c.isMeshGenerated = true
+            meshedChunks.add(c)
+            return
         }
 
         c.vao = glGenVertexArrays()
@@ -834,6 +922,10 @@ class StrataDiver {
         glEnableVertexAttribArray(2)
 
         c.isMeshGenerated = true
+        // Register here rather than at the call sites: breaking or placing a block
+        // also rebuilds the mesh, and a mesh nobody tracks would be drawn as nothing
+        // and never freed.
+        meshedChunks.add(c)
     }
 
 
@@ -1372,6 +1464,10 @@ class StrataDiver {
 
 
     private fun cleanup() {
+        // Release every live mesh before the context dies, so a normal exit does
+        // not leave the driver holding the world's vertex buffers.
+        meshedChunks.forEach { it.releaseMesh() }
+        meshedChunks.clear()
         glfwDestroyWindow(window)
         glfwTerminate()
     }

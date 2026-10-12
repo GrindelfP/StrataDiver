@@ -98,6 +98,58 @@ enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<F
     }
 }
 
+// --- Deterministic World Generation ---
+//
+// Terrain has always been reproducible: Perlin noise is a pure function of world
+// position. Trees were not — they drew from Math.random(), so the same patch of
+// ground grew a different forest every time its Chunk was constructed. Chunks are
+// now released when the player walks away and rebuilt on return, which turns that
+// into a visible bug: the world would rearrange itself behind you, and a tree
+// could sprout in the middle of a house you built. Everything a Chunk's generation
+// needs to decide is therefore derived from a hash of its own position.
+object WorldGen {
+
+    /**
+     * A seeded xorshift32. Only used during generation, so it never needs to be
+     * cryptographically anything — it just has to give the same sequence for the
+     * same seed, every time, forever.
+     */
+    class Random(seed: Int) {
+        private var state: Int = if (seed == 0) 0x9E3779B9.toInt() else seed
+
+        private fun next(): Int {
+            state = state xor (state shl 13)
+            state = state xor (state ushr 17)
+            state = state xor (state shl 5)
+            return state
+        }
+
+        /** Uniform in [0, bound). Uses the high bits, which xorshift fills last. */
+        fun nextInt(bound: Int): Int =
+            if (bound <= 0) 0 else ((next().toLong() and 0xFFFFFFFFL) % bound).toInt()
+
+        /** Uniform in [0, 1). */
+        fun nextFloat(): Float = (next() ushr 8) / 16777216f
+
+        /** True with probability [p]. */
+        fun chance(p: Float): Boolean = nextFloat() < p
+    }
+
+    /** A seed derived from a Chunk's grid position. */
+    fun seedFor(cx: Int, cy: Int, cz: Int): Int {
+        // An integer avalanche mix. Kotlin Int arithmetic wraps, which is the point.
+        var h = cx * -1640531527
+        h = h xor (cy * -2048144789)
+        h = h xor (cz * 1013904223)
+        h = h xor (h ushr 16)
+        h *= -2048144789
+        h = h xor (h ushr 13)
+        h *= -1028477387
+        return h xor (h ushr 16)
+    }
+}
+
+
 // --- The Chunk container ---
 class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     companion object {
@@ -110,9 +162,18 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     // 1D array to represent 3D space (x * size*size + y * size + z)
     private val blocks = ByteArray(SIZE * SIZE * SIZE)
 
+    /** This Chunk's place in the world grid. Identity of the *place*, not of the mesh. */
+    val position: Triple<Int, Int, Int> = Triple(xOffset, yOffset, zOffset)
+
     var vao: Int = -1
     var vbo: Int = -1
     var vertexCount: Int = 0
+
+    /**
+     * Whether the mesh state matches the block data. This does not imply there is
+     * anything to draw: an all-air Chunk is fully meshed and correctly has no
+     * geometry, which is why [vertexCount] is what the draw loop checks.
+     */
     var isMeshGenerated = false
 
     init {
@@ -151,8 +212,11 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
             }
         }
 
-        if (surfaceLocalY != -1 && Math.random() < 0.6) {
-            addSimpleTree(8, surfaceLocalY + 1, 8)
+        // Seeded from this Chunk's own position, so the forest here is the same
+        // forest every time the player walks back into it.
+        val random = WorldGen.Random(WorldGen.seedFor(xOffset, yOffset, zOffset))
+        if (surfaceLocalY != -1 && random.chance(0.6f)) {
+            addSimpleTree(8, surfaceLocalY + 1, 8, random)
         }
     }
 
@@ -171,7 +235,7 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     }
 
 
-    private fun addSimpleTree(tx: Int, ty: Int, tz: Int) {
+    private fun addSimpleTree(tx: Int, ty: Int, tz: Int, random: WorldGen.Random) {
         // How many blocks of vertical room the tree can actually use in this chunk.
         // Growing into the top edge would produce a flat-topped trunk that looks broken
         // from above, so a tree that cannot fit whole is not grown at all.
@@ -180,7 +244,7 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 
         // Trunk: 4 or 5 blocks, but never more than the chunk has room for, leaving
         // space above the trunk for the canopy cap.
-        val trunkHeight = minOf(4 + (Math.random() * 2).toInt(), headroom - 2)
+        val trunkHeight = minOf(4 + random.nextInt(2), headroom - 2)
         if (trunkHeight < MIN_TREE_HEIGHT) return
 
         for (i in 0..trunkHeight) {
@@ -197,7 +261,7 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
                     val distSq = lx * lx + lz * lz
                     if (distSq > radius * radius) continue
                     // Trim the outermost ring's corners.
-                    if (distSq >= radius * radius && Math.random() < 0.6) continue
+                    if (distSq >= radius * radius && random.chance(0.6f)) continue
 
                     val bx = tx + lx; val by = ly; val bz = tz + lz
                     if (bx !in 0 until SIZE || by !in 0 until SIZE || bz !in 0 until SIZE) continue
@@ -223,7 +287,15 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
         }
     }
 
-    fun cleanup() {
+    /**
+     * Frees the GPU mesh and keeps the block data.
+     *
+     * This split is the whole trick behind the streaming: the Cells — and anything
+     * the player built in them — outlive their triangles, so walking away discards
+     * only what can be cheaply rebuilt. The Chunk becomes an ordinary resident of
+     * the world again until something wants it drawn.
+     */
+    fun releaseMesh() {
         if (vao != -1) {
             glDeleteVertexArrays(vao)
             vao = -1
@@ -232,6 +304,7 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
             glDeleteBuffers(vbo)
             vbo = -1
         }
+        vertexCount = 0
         isMeshGenerated = false
     }
 }
