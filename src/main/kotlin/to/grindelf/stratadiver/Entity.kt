@@ -1,48 +1,61 @@
 package to.grindelf.stratadiver
 
-import org.lwjgl.opengl.ARBVertexArrayObject.glBindVertexArray
+import org.joml.Matrix4f
+import org.joml.Vector3f
 import org.lwjgl.opengl.GL11.GL_TRIANGLES
 import org.lwjgl.opengl.GL11.glDrawArrays
-import org.lwjgl.opengl.GL20.glGetUniformLocation
-import org.lwjgl.opengl.GL20.glUniform2f
-import org.lwjgl.opengl.GL20.glUniformMatrix4fv
+import org.lwjgl.opengl.GL30.glBindVertexArray
 
+/**
+ * Whether a body of [width] by [height] centred on [at] would overlap anything Solid.
+ * The corners are sampled, not the centre, or a body would clip through the edge of
+ * every Cell it brushes past.
+ */
+fun SolidWorld.isSolidAt(at: Vector3f, width: Float, height: Float): Boolean {
+    for (x in listOf(-width, width)) {
+        for (z in listOf(-width, width)) {
+            for (y in listOf(0f, height)) {
+                if (isSolid(at.x + x, at.y - y, at.z + z)) return true
+            }
+        }
+    }
+    return false
+}
 
+/**
+ * Anything with a position in the world that moves on its own.
+ *
+ * Knows only that the world can say whether a Cell is Solid. It has no idea a window or a
+ * shader program exist, so how an Entity moves is checkable without either.
+ */
 abstract class Entity(
-    var pos: org.joml.Vector3f,
+    var pos: Vector3f,
     var width: Float = 0.25f,
     var height: Float = 0.25f
 ) {
-    var vel = org.joml.Vector3f(0f, 0f, 0f)
+    var vel = Vector3f(0f, 0f, 0f)
     var isGrounded = false
     var rotation = 0f
 
-    abstract fun render(stack: java.nio.FloatBuffer, shaderProgram: Int, itemVao: Int)
+    /** The world-space matrix this Entity is drawn with. */
+    abstract fun modelMatrix(): Matrix4f
 
-    fun update(world: StrataDiver) {
-        // Apply Gravity
+    /** The Tile this Entity is drawn from. */
+    abstract fun tile(): TileRef
+
+    fun update(world: SolidWorld) {
         vel.y -= 0.015f // Matches player gravity
 
-        // Horizontal Movement (Friction)
+        // Friction: items skitter to a stop rather than sliding forever.
         vel.x *= 0.9f
         vel.z *= 0.9f
 
-        // Collision Resolution (X)
-        val nextX = org.joml.Vector3f(pos).add(vel.x, 0f, 0f)
-        if (!world.checkCollisionAt(nextX, width, height)) {
-            pos.x = nextX.x
-        } else { vel.x = 0f }
-
-        // Collision Resolution (Z)
-        val nextZ = org.joml.Vector3f(pos).add(0f, 0f, vel.z)
-        if (!world.checkCollisionAt(nextZ, width, height)) {
-            pos.z = nextZ.z
-        } else { vel.z = 0f }
-
-        // Collision Resolution (Y)
-        val nextY = org.joml.Vector3f(pos).add(0f, vel.y, 0f)
-        if (!world.checkCollisionAt(nextY, width, height)) {
-            pos.y = nextY.y
+        // Each axis on its own, for the same reason the player's do: it is what stops an
+        // item tunnelling into a corner and what lets it slide along a wall.
+        if (!world.isSolidAt(moved(vel.x, 0f, 0f), width, height)) pos.x += vel.x else vel.x = 0f
+        if (!world.isSolidAt(moved(0f, 0f, vel.z), width, height)) pos.z += vel.z else vel.z = 0f
+        if (!world.isSolidAt(moved(0f, vel.y, 0f), width, height)) {
+            pos.y += vel.y
             isGrounded = false
         } else {
             if (vel.y < 0) isGrounded = true
@@ -51,29 +64,36 @@ abstract class Entity(
 
         rotation += 2.0f // Constant spin for visual flair
     }
+
+    private fun moved(dx: Float, dy: Float, dz: Float) = Vector3f(pos.x + dx, pos.y + dy, pos.z + dz)
 }
 
+/** An item that fell out of a broken Cell and is waiting to be picked up. */
+class DroppedItem(pos: Vector3f, val type: BlockType) : Entity(pos, 0.15f, 0.3f) {
 
-class DroppedItem(pos: org.joml.Vector3f, val type: BlockType) : Entity(pos, 0.15f, 0.3f) {
-    override fun render(stack: java.nio.FloatBuffer, shaderProgram: Int, itemVao: Int) {
-        val modelLoc = glGetUniformLocation(shaderProgram, "model")
-        val uvOffsetLoc = glGetUniformLocation(shaderProgram, "uvOffset")
-
-        // 1. Position and Animation
-        val bobbing = (Math.sin(rotation.toDouble() * 0.05).toFloat() * 0.1f)
-
-        val modelMatrix = org.joml.Matrix4f()
+    override fun modelMatrix(): Matrix4f {
+        val bobbing = (Math.sin(rotation.toDouble()) * 0.05).toFloat() * 0.1f
+        return Matrix4f()
             .translation(pos.x, pos.y + bobbing, pos.z)
             .rotate(Math.toRadians(rotation.toDouble()).toFloat(), 0f, 1f, 0f)
-            .scale(0.25f) // Scale the 1x1 cube down to item size
+            .scale(0.25f) // Scale the unit cube down to item size
+    }
 
-        glUniformMatrix4fv(modelLoc, false, modelMatrix.get(stack))
+    override fun tile() = type.primary
+}
 
-        // 2. Texture Logic
-        glUniform2f(uvOffsetLoc, type.texX.toFloat(), type.texY.toFloat())
+/** Draws every Entity from the one cube mesh they all share. */
+object EntityRenderer {
 
-        // 3. Draw
-        glBindVertexArray(itemVao)
-        glDrawArrays(GL_TRIANGLES, 0, 36)
+    fun draw(entities: List<Entity>, shader: ShaderProgram, cube: Mesh) {
+        shader.setInt("isEntity", 1)
+        for (entity in entities) {
+            val tile = entity.tile()
+            shader.setMatrix("model", entity.modelMatrix())
+            shader.setVec2("uvOffset", tile.tx.toFloat(), tile.ty.toFloat())
+            glBindVertexArray(cube.vao)
+            glDrawArrays(GL_TRIANGLES, 0, 36)
+        }
+        shader.setInt("isEntity", 0)
     }
 }

@@ -1,7 +1,5 @@
 package to.grindelf.stratadiver
 
-import org.lwjgl.opengl.GL30.glDeleteBuffers
-import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import kotlin.math.floor
 
 
@@ -155,6 +153,9 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     companion object {
         const val SIZE = 16
 
+        /** How many Chunks the world stacks vertically, from Y=0 to Y=256. */
+        const val HEIGHT_LAYERS = 16
+
         // Shortest trunk worth growing: below this a tree reads as a stump.
         const val MIN_TREE_HEIGHT = 3
     }
@@ -165,16 +166,15 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     /** This Chunk's place in the world grid. Identity of the *place*, not of the mesh. */
     val position: Triple<Int, Int, Int> = Triple(xOffset, yOffset, zOffset)
 
-    var vao: Int = -1
-    var vbo: Int = -1
-    var vertexCount: Int = 0
-
     /**
-     * Whether the mesh state matches the block data. This does not imply there is
-     * anything to draw: an all-air Chunk is fully meshed and correctly has no
-     * geometry, which is why [vertexCount] is what the draw loop checks.
+     * Its triangles, while it has any. Null means not meshed — or meshed and correctly
+     * empty, since an all-air Chunk has no geometry worth a GPU object. The draw loop
+     * skips a null mesh, which is why most of the world costs nothing to have.
+     *
+     * No GL happens in this class's constructor, so a Chunk can still be generated and
+     * inspected without a context.
      */
-    var isMeshGenerated = false
+    var mesh: Mesh? = null
 
     init {
         val seaLevel = 128
@@ -290,22 +290,14 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     /**
      * Frees the GPU mesh and keeps the block data.
      *
-     * This split is the whole trick behind the streaming: the Cells — and anything
-     * the player built in them — outlive their triangles, so walking away discards
-     * only what can be cheaply rebuilt. The Chunk becomes an ordinary resident of
-     * the world again until something wants it drawn.
+     * This split is the whole trick behind the streaming: the Cells — and anything the
+     * player built in them — outlive their triangles, so walking away discards only what
+     * can be cheaply rebuilt. The Chunk becomes an ordinary resident of the world again
+     * until something wants it drawn.
      */
     fun releaseMesh() {
-        if (vao != -1) {
-            glDeleteVertexArrays(vao)
-            vao = -1
-        }
-        if (vbo != -1) {
-            glDeleteBuffers(vbo)
-            vbo = -1
-        }
-        vertexCount = 0
-        isMeshGenerated = false
+        mesh?.release()
+        mesh = null
     }
 }
 

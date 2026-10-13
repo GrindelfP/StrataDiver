@@ -36,24 +36,40 @@ There are **no tests** in this project yet.
 
 ## Architecture
 
+`StrataDiver` is the composition root: it owns the window and the GL context, orders a
+frame, and routes input. Everything with behaviour of its own is its own type.
+
 | File | Purpose |
 |------|---------|
-| `Main.kt` | Entry point (`fun main()`), game loop, rendering, input, physics, camera, block interaction (class `StrataDiver`) |
-| `World.kt` | `BlockType` enum, `Chunk` class (16×16×16), `MeshGenerator`, `PerlinNoise`, `FastNoise` |
-| `Entity.kt` | `Entity` abstract class, `DroppedItem` |
+| `Main.kt` | Entry point (`fun main()`) — hence the JVM class `MainKt` in `pom.xml`. Nothing else. |
+| `StrataDiver.kt` | The game: window/GL lifecycle, frame order, input routing, entity tick + pickup, break/place (class `StrataDiver`, enum `ControlMode`) |
+| `ShaderProgram.kt` | Compiles/links the program; resolves every uniform location **once** and sets it by name |
+| `Geometry.kt` | `Mesh` (vao+vbo+count, released together), `Geometry.upload()`, and the static shapes `UNIT_QUAD`/`UNIT_CUBE`/`SELECTION_BOX`/`MINIMAP_QUAD` |
+| `ChunkStreamer.kt` | Which Chunks exist (`chunks`), which hold GPU memory (`meshed`), block read/write, streaming (interface `SolidWorld`) |
+| `Player.kt` | Position/velocity/physics, look, raycast, spawn, `RaycastResult`. Knows nothing about GLFW |
+| `UiPass.kt` | Screen-space drawing: the ortho projection, flat Tiles, composited isometric Icons |
+| `Hud.kt` | Crosshair, hotbar, inventory, cursor-held item — pure drawing |
+| `FpsCounter.kt` | Frame timing + the seven-segment readout (segment names, not bitmasks) |
+| `SlotLayout.kt` | Where the slots are on screen, and hit-testing. Pure arithmetic, no GL |
+| `World.kt` | `BlockType` enum, `Atlas`, `Chunk` (16×16×16), `MeshGenerator`, `WorldGen`, `PerlinNoise`, `FastNoise` |
+| `Entity.kt` | `Entity`, `DroppedItem`, `EntityRenderer`. Depends on `SolidWorld`, not on the game |
 | `Inventory.kt` | `ItemStack`, `Inventory` (hotbar + main) |
-| `Utills.kt` | `RaycastResult` data class |
+| `Art.kt` / `AtlasDump.kt` | Authored 16×16 art → atlas buffer; `AtlasDump` renders it to a PNG to check without a window |
+| `tools/Check.kt` | Headless assertions over everything above that does not need GL. Not compiled into the game |
 
 ### Key Concepts
 
-- **Chunks**: 16×16×16 blocks, stored as `ByteArray`. World is a `Map<Triple<Int,Int,Int>, Chunk>`. Vertical stacking: 16 chunks in Y.
+- **Chunks**: 16×16×16 blocks, stored as `ByteArray`. `Chunk.HEIGHT_LAYERS` = 16 in Y.
+- **Two lifetimes**: `chunks` are the world's Cells, created on first touch and never
+  discarded; `meshed` is only the subset holding GPU memory. Leaving releases the mesh
+  and keeps the Cells. Collapsing the two is what made frame cost grow with distance walked.
 - **Terrain**: Perlin noise → height map. Sea level at Y=128. Layers: bedrock → stone → dirt → grass.
-- **Meshing**: Face-culling — only faces adjacent to AIR are emitted. Vertex format: 3 pos + 2 UV + 3 normal = **8 floats per vertex**.
-- **Textures**: Procedurally generated 256×256 atlas (4×4 tiles of 64px). Block tiles: grass, dirt, stone, bedrock, wood. UI tiles: slot frame (beveled), selected-slot (white frame), panel background.
+- **Meshing**: Face-culling by opacity — a face is drawn unless its neighbour is opaque. Vertex format: 3 pos + 2 UV + 3 normal = **8 floats per vertex**.
+- **Textures**: Procedurally generated 256×256 atlas (4×4 tiles of 64px). Block tiles: grass, dirt, stone, bedrock, wood, leaves. UI tiles: slot frame, selected-slot, panel, crosshair, plus `Atlas.LINE` — opaque white, for wireframes and the FPS font, which must survive the alpha cutout.
 - **Control routing**: All input (per-frame polling, key callback, mouse move, mouse click) routes through a `ControlMode` — `GAMEPLAY` or `INTERACTIVE`. `INTERACTIVE` is active whenever a GUI layer is open (inventory now, escape menu later): gameplay keys are unassigned, the player is frozen, and mouse clicks drive the UI.
-- **GUI**: Rendered as flat 2D screen-space quads in a separate orthographic pass after the 3D world. The hotbar is always-on at the bottom; opening the inventory (E) shows a 3×9 grid above it on a panel. Slots accept mouse clicks (pick up / move / stack via the cursor-held item).
-- **Day/night**: `CONST_TIME = true` fixed in `Main.kt` companion. Sun/moon direction drives diffuse lighting in shader.
-- **Physics**: AABB collision per-axis (X, Z, then Y). Gravity = −0.015, jump = 0.25.
+- **GUI**: Flat 2D screen-space quads in an orthographic pass after the 3D world, all through `UiPass`. The hotbar is always-on; the inventory (E) shows a 3×9 grid above it on a Panel. Slots accept clicks (pick up / move / stack via the cursor-held item).
+- **Day/night**: `CONST_TIME = true` in the `StrataDiver` companion. Sun/moon direction drives diffuse lighting in the shader.
+- **Physics**: AABB collision per-axis (X, Z, then Y). Gravity = −0.015, jump = 0.25. `Player.position` is the **eye**; the body hangs `Player.HEIGHT` below it, so the feet are at `position.y - 1.8`. A resting player stops up to one gravity step short of the surface — that is the per-frame collision, not a bug.
 - **Block interaction**: Raycast (step 0.1, reach 5.0) → left click breaks, right click places.
 - **Entity**: Dropped items with gravity, friction, spin animation, pickup on proximity.
 
@@ -89,12 +105,32 @@ YYYY-MM-DD, HH:MM, [TAG] What was found, what was changed, and why.
 Compiling is not verification. This project has no test suite and its rendering path needs a
 GL context, so pick the strongest check available and say plainly what it could not cover.
 
-- **Anything not touching GL** can be exercised headlessly. `Chunk`'s constructor and
-  `MeshGenerator` make no GL calls, so they can be driven from a scratch main class on
-  `target/classes` to assert real numbers (vertex counts, determinism across regeneration).
-- **Anything touching GL** cannot be verified without the window. Say so, and ask the user to
-  run it. Do not let "it compiles" stand in for "it works" — that is how a change shipped that
-  rendered the entire world as sky.
+- **`tools/Check.kt` is that check.** It asserts the real numbers behind the things that have
+  actually broken before: mesher vertex counts and all-air Chunk counts, generation
+  determinism, slot hit-testing, the seven-segment table, physics and raycast against a fake
+  world. Run it after any change to those:
+
+  ```bash
+  export JAVA_HOME=$(/usr/libexec/java_home -v 23)   # Kotlin 1.9.0 cannot parse JDK 27
+  mvn -q compile
+  CP=~/.m2/repository/org/jetbrains/kotlin/kotlin-stdlib/1.9.0/kotlin-stdlib-1.9.0.jar:~/.m2/repository/org/joml/joml/1.10.5/joml-1.10.5.jar:~/.m2/repository/org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3.jar:target/classes
+  kotlinc tools/Check.kt -cp "$CP" -d /tmp/checkout && java -cp "/tmp/checkout:$CP" check.CheckKt
+  ```
+
+  Use `export`, not the `JAVA_HOME=... mvn` prefix form, when chaining commands — the
+  prefix does not survive into a later `&&` branch and the build dies on `IllegalArgumentException: 27`.
+
+  It lives in `tools/`, not `src/main/kotlin`, so Maven never compiles it into the game.
+  Add to it when you touch something that can be checked this way — the alternative is
+  discovering the regression by playing.
+- **More things are checkable than used to be.** `SolidWorld` exists so `Player` and `Entity`
+  can be driven against a fake world with no GL at all; `SlotLayout` is pure arithmetic. If
+  you find yourself reasoning about behaviour you cannot check, the fix is usually to widen a
+  seam rather than to squint harder.
+- **Anything touching GL** still cannot be verified without the window. Say so, and ask the
+  user to run it. Do not let "it compiles" stand in for "it works" — that is how a change
+  shipped that rendered the entire world as sky, and how another shipped after "compiles"
+  was the only evidence offered.
 - **Localise before fixing.** When something breaks, use what still works to bound the fault:
   if physics and raycasting are fine but nothing renders, the data is fine and the fault is in
   the draw path.
