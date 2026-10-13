@@ -51,6 +51,8 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 | `FpsCounter.kt` | Frame timing + the seven-segment readout (segment names, not bitmasks) |
 | `SlotLayout.kt` | Where the slots are on screen, and hit-testing. Pure arithmetic, no GL |
 | `Minimap.kt` | The Minimap's model: one Surface per Cell, the palette, and when it is stale. No GL |
+| `Synth.kt` | Turns a Material + Occasion into PCM. Deterministic, seeded, no files. No OpenAL |
+| `SoundEngine.kt` | OpenAL device, listener, capped voice pool. Optional: a failed device means silence, not a failed game |
 | `World.kt` | `BlockType` enum, `Atlas`, `Chunk` (16×16×16), `MeshGenerator`, `WorldGen`, `PerlinNoise`, `FastNoise` |
 | `Entity.kt` | `Entity`, `DroppedItem`, `EntityRenderer`. Depends on `SolidWorld`, not on the game |
 | `Inventory.kt` | `ItemStack`, `Inventory` (hotbar + main) |
@@ -78,6 +80,17 @@ frame, and routes input. Everything with behaviour of its own is its own type.
   picture stays on screen rather than being replaced by one that is mostly Unknown.
 - **Day/night**: `CONST_TIME = true` in the `StrataDiver` companion. Sun/moon direction drives diffuse lighting in the shader.
 - **Physics**: AABB collision per-axis (X, Z, then Y). Gravity = −0.015, jump = 0.25. `Player.position` is the **eye**; the body hangs `Player.HEIGHT` below it, so the feet are at `position.y - 1.8`. A resting player stops up to one gravity step short of the surface — that is the per-frame collision, not a bug.
+- **Material**: what a Block Type is *made of*, deciding how it Sounds. Many Block Types share one —
+  grass and dirt are both earth, stone and bedrock both stone, leaves are foliage of their own. AIR has
+  none. Kept deliberately separate from Sound so foliage can later get its own voice without anyone
+  arguing about what leaves *are*.
+- **Sound**: one noise played in response to an **Occasion** — `FOOTSTEP`, `BREAK`, `PLACE`, `PICKUP`,
+  `LANDING`. Synthesized at runtime, never recorded; see `docs/adr/0002-sounds-synthesized-at-runtime.md`.
+  Break/place/pickup are positioned in the world; footsteps and landings are not, because they are
+  already at the listener. Pitch and gain are jittered per play, without which every footstep is the
+  same waveform on the same beat and walking sounds like a machine gun.
+- **Audio is optional.** If the OpenAL device will not open, `SoundEngine` disables itself and the game
+  runs silently. Never let a missing sound card stop the game starting.
 - **Block interaction**: Raycast (step 0.1, reach 5.0) → left click breaks, right click places.
 - **Entity**: Dropped items with gravity, friction, spin animation, pickup on proximity.
 

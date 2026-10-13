@@ -71,6 +71,18 @@ Most Block Types Drop themselves. Some — leaves, chiefly — Drop nothing, so 
 destroying them cannot fill the inventory.
 _Avoid_: Item drop, pickup
 
+**Material**:
+What a Block Type is made of, deciding how it Sounds when walked on, struck, or set
+down. Many Block Types share one Material — grass and dirt are both earth, stone and
+bedrock both stone, leaves are foliage of their own.
+_Avoid_: Block Type, texture, the Sound itself
+
+**Sound**:
+One distinct noise the game plays in response to something happening. Each Material has
+its own for each kind of event — footstep, break, place, pickup, landing. Sounds are
+synthesized, not recorded.
+_Avoid_: SFX, audio clip, jingle, effect
+
 **Solid**:
 Whether a Block Type obstructs movement through the cells it occupies.
 _Avoid_: Hard, collidable

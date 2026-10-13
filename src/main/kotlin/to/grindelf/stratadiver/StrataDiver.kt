@@ -99,6 +99,15 @@ class StrataDiver {
         private const val PICKUP_RADIUS = 0.5f
 
         private const val MAX_STACK = 64
+
+        /**
+         * Seconds of walking per footstep — one human stride. Multiplied by the distance
+         * covered in that time, so it is a stride rather than a speed.
+         */
+        private const val STRIDE_SECONDS = 0.75f
+
+        /** The frame rate the stride length is calculated against. */
+        private const val NOMINAL_FPS = 60f
     }
 
     // --- GL objects ---
@@ -112,8 +121,28 @@ class StrataDiver {
     private val streamer = ChunkStreamer()
     private lateinit var player: Player
     private lateinit var ui: UiPass
+    private lateinit var sound: SoundEngine
     private val fps = FpsCounter()
     private val layout = SlotLayout(WINDOW_WIDTH, WINDOW_HEIGHT)
+
+    // --- Walking ---
+    //
+    // Footsteps are triggered by ground covered, never by frames or by a timer: a timer
+    // drifts out of step with the actual stride and speeds up when the player does.
+    private var stepDistance = 0f
+
+    /**
+     * How much ground the player covers between footsteps.
+     *
+     * Derived from [Player.WALK_SPEED] and the nominal frame rate rather than written as a
+     * magic number, so that changing the walk speed does not silently turn the footsteps
+     * into either a machine gun or a slow march. A human stride is roughly 0.75 Cells.
+     */
+    private val strideLength: Float =
+        Player.WALK_SPEED * NOMINAL_FPS * STRIDE_SECONDS
+
+    /** The fall distance at which a landing reaches full volume. */
+    private val landingFullVolume = 12f
 
     // --- Camera ---
     private val projection = Matrix4f().perspective(
@@ -209,6 +238,10 @@ class StrataDiver {
         ui = UiPass(shader, WINDOW_WIDTH, WINDOW_HEIGHT)
         player = Player(streamer)
 
+        // Audio is optional by design: a failure here is logged and the game runs quietly.
+        sound = SoundEngine()
+        sound.start()
+
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED)
         registerCallbacks()
     }
@@ -242,6 +275,14 @@ class StrataDiver {
                 ControlMode.GAMEPLAY -> onGameplayClick(button)
                 ControlMode.INTERACTIVE -> onInteractiveClick(button)
             }
+        }
+
+        // An unattended game that keeps making noise is genuinely irritating, and the game
+        // is not simulating anything the player can see. Stopped and silenced rather than
+        // suspended, because LWJGL binds no resume for the suspend call — so this is the
+        // muting fallback rather than the device suspension originally preferred.
+        glfwSetWindowFocusCallback(window) { _, focused ->
+            sound.isPaused = !focused
         }
     }
 
@@ -321,6 +362,11 @@ class StrataDiver {
             tick()
             aimedAt = player.raycast()
 
+            // The listener follows the eyes, so a block broken to the left is heard from
+            // the left rather than from inside the player's skull.
+            sound.updateListener(player.position, player.front)
+            sound.isGuiOpen = controlMode == ControlMode.INTERACTIVE
+
             drawFrame(sunDir, moonDir)
 
             glfwSwapBuffers(window)
@@ -330,9 +376,12 @@ class StrataDiver {
 
     /** One step of the world: the player moves, Chunks stream, items fall and get collected. */
     private fun tick() {
+        val before = Vector3f(player.position)
         player.step()
         streamer.update(player.position)
         updateMinimap()
+        updateFootsteps(before)
+        updateLanding()
 
         val iterator = entities.iterator()
         while (iterator.hasNext()) {
@@ -345,8 +394,63 @@ class StrataDiver {
             ) {
                 iterator.remove()
                 println("Picked up: ${entity.type.name}")
+                // The item's own Material, not the block it came from: grass Drops dirt,
+                // and what you pick up is dirt.
+                entity.type.material?.let {
+                    sound.play(Occasion.PICKUP, it, entity.pos, gain = 0.7f)
+                }
             }
         }
+    }
+
+    /**
+     * Plays a footstep every [strideLength] of ground covered, while grounded and moving.
+     *
+     * Measured on horizontal movement only — climbing and falling should not change how
+     * often the player's feet fall, and a stair climb is silent per-step for the same
+     * reason.
+     */
+    private fun updateFootsteps(before: Vector3f) {
+        if (!player.isGrounded) {
+            stepDistance = 0f
+            return
+        }
+
+        val dx = player.position.x - before.x
+        val dz = player.position.z - before.z
+        stepDistance += kotlin.math.sqrt(dx * dx + dz * dz)
+
+        if (stepDistance >= strideLength) {
+            // Carry the remainder, so a slow drift into a step does not fire one late and
+            // then immediately fire another to catch up.
+            stepDistance -= strideLength
+            materialUnderfoot()?.let { sound.play(Occasion.FOOTSTEP, it, gain = 0.45f) }
+        }
+    }
+
+    private fun updateLanding() {
+        // The threshold lives in Player, beside the physics that produces the wobble it
+        // suppresses — see Player.MIN_FALL_TO_LAND.
+        val fall = player.consumeLanding() ?: return
+
+        // Louder and lower for a longer fall, so a ten-block drop reads differently from
+        // stepping off a kerb without needing a second buffer.
+        val intensity = (fall / landingFullVolume).coerceIn(0f, 1f)
+        materialUnderfoot()?.let {
+            sound.play(
+                Occasion.LANDING, it,
+                gain = 0.5f + 0.5f * intensity,
+                pitch = 1f - 0.15f * intensity
+            )
+        }
+    }
+
+    /** The Material of the Cell under the player's feet, or null if there is no floor. */
+    private fun materialUnderfoot(): Material? {
+        val y = kotlin.math.floor(player.position.y - Player.HEIGHT).toInt()
+        val x = kotlin.math.floor(player.position.x).toInt()
+        val z = kotlin.math.floor(player.position.z).toInt()
+        return streamer.blockAt(x, y, z).material
     }
 
     /**
@@ -508,6 +612,16 @@ class StrataDiver {
         // up to a quarter-second late.
         minimap.invalidate()
 
+        // Inside the function, after the bedrock guard, so striking the unbreakable floor
+        // is silent rather than a thud for something that did not happen. Positioned,
+        // because where you broke something is part of what you heard.
+        type.material?.let {
+            sound.play(
+                Occasion.BREAK, it,
+                Vector3f(block.x + 0.5f, block.y + 0.5f, block.z + 0.5f)
+            )
+        }
+
         // A Block Type decides what it Drops: grass Drops dirt, leaves Drop nothing, and
         // everything else Drops itself.
         val drop = type.drop
@@ -528,6 +642,14 @@ class StrataDiver {
         val type = inventory.hotbar[selectedSlot]?.type ?: BlockType.STONE
         streamer.setBlock(placePos.x, placePos.y, placePos.z, type)
         minimap.invalidate()
+
+        // After the "would seal the player inside" guard: a refused placement made no sound.
+        type.material?.let {
+            sound.play(
+                Occasion.PLACE, it,
+                Vector3f(placePos.x + 0.5f, placePos.y + 0.5f, placePos.z + 0.5f)
+            )
+        }
     }
 
     // --- Touching the inventory ---
@@ -593,6 +715,7 @@ class StrataDiver {
         streamer.releaseAll()
         ui.release()
         minimapMesh.release()
+        sound.stop()
         glfwDestroyWindow(window)
         glfwTerminate()
     }

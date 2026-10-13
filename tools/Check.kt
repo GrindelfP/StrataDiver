@@ -312,6 +312,128 @@ fun main() {
         kotlin.math.abs(h.x - looker2.front.x) < 1e-5f && kotlin.math.abs(h.y - looker2.front.z) < 1e-5f
     })
 
+    println("\n== Sounds: every Material maps, and AIR does not ==")
+    check("every solid Block Type has a Material",
+        BlockType.entries.filter { it != BlockType.AIR }.all { it.material != null })
+    check("AIR has no Material — it has no substance", BlockType.AIR.material == null)
+    check("grass and dirt are both earth", BlockType.GRASS.material == BlockType.DIRT.material)
+    check("stone and bedrock are both stone", BlockType.STONE.material == BlockType.BEDROCK.material)
+    check("leaves are foliage, not wood",
+        BlockType.LEAVES.material == Material.FOLIAGE && BlockType.LEAVES.material != BlockType.WOOD.material)
+    check("every Material is used by at least one Block Type",
+        Material.entries.all { m -> BlockType.entries.any { it.material == m } })
+
+    println("\n== Sounds: the buffers are real audio, not valid silence ==")
+    val sounds = Material.entries.flatMap { m -> Occasion.entries.map { m to it } }
+    val rendered = sounds.associateWith { Synth.render(it.first, it.second) }
+
+    fun rms(s: FloatArray) =
+        kotlin.math.sqrt(s.sumOf { (it * it).toDouble() } / s.size)
+
+    fun peak(s: FloatArray) = s.maxOf { kotlin.math.abs(it) }
+
+    // These three are the failure modes this shape of code invites. A filter that cancels
+    // to zero, an envelope that never opens, and a buffer that clips are all perfectly
+    // valid PCM and all inaudible or painful.
+    check("no Sound is silent", rendered.values.all { rms(it) > 0.001 },
+        "quietest RMS ${rendered.values.minOf { rms(it) }}")
+    check("no Sound is clipped", rendered.values.all { peak(it) <= 1.0f },
+        "loudest peak ${rendered.values.maxOf { peak(it) }}")
+    check("no Sound is long enough to be mistaken for a loop",
+        rendered.values.all { it.size.toFloat() / Synth.SAMPLE_RATE < 0.5f },
+        "longest ${rendered.values.maxOf { it.size }.toFloat() / Synth.SAMPLE_RATE}s")
+    check("every Sound ends at silence, so it cannot pop",
+        rendered.values.all { s -> kotlin.math.abs(s.last()) < 1e-3f })
+
+    println("\n== Sounds: different Materials must actually sound different ==")
+    // The claim "different Materials sound different" is worthless unless measured. This is
+    // the check that would catch a filter change quietly collapsing stone onto dirt.
+    fun spectralCentroid(s: FloatArray): Float {
+        // Crude zero-crossing rate as a brightness proxy. Enough to separate a 320Hz earth
+        // thud from a 3400Hz rustle; not a real spectrum, and not trying to be.
+        var crossings = 0
+        for (i in 1 until s.size) if (s[i - 1] < 0f && s[i] >= 0f) crossings++
+        return crossings.toFloat() * Synth.SAMPLE_RATE / (2f * s.size)
+    }
+
+    val centroids = Material.entries.associateWith { m ->
+        spectralCentroid(Synth.render(m, Occasion.FOOTSTEP))
+    }
+    check("stone is brighter than earth",
+        centroids[Material.STONE]!! > centroids[Material.EARTH]!!,
+        "stone=${centroids[Material.STONE]} earth=${centroids[Material.EARTH]}")
+    check("foliage is brighter than wood",
+        centroids[Material.FOLIAGE]!! > centroids[Material.WOOD]!!,
+        "foliage=${centroids[Material.FOLIAGE]} wood=${centroids[Material.WOOD]}")
+
+    val allCentroids = Material.entries.map {
+        it to spectralCentroid(Synth.render(it, Occasion.FOOTSTEP))
+    }
+    check("no two Materials are accidentally identical", run {
+        (0 until allCentroids.size).all { i ->
+            (i + 1 until allCentroids.size).all { j ->
+                kotlin.math.abs(allCentroids[i].second - allCentroids[j].second) > 20f
+            }
+        }
+    }, "centroids $allCentroids")
+
+    println("\n== Sounds: synthesis is deterministic ==")
+    // If this fails, every other assertion in this section is asserting against a moving
+    // target and none of them mean anything.
+    check("rendering the same Sound twice is byte-identical", run {
+        val a = Synth.render(Material.STONE, Occasion.BREAK)
+        val b = Synth.render(Material.STONE, Occasion.BREAK)
+        a.contentEquals(b)
+    })
+    check("every Sound is distinct from every other", run {
+        val keys = sounds.toList()
+        (0 until keys.size).all { i ->
+            (i + 1 until keys.size).all { j ->
+                !rendered[keys[i]]!!.contentEquals(rendered[keys[j]]!!)
+            }
+        }
+    })
+
+    println("\n== Sounds: the landing seam ==")
+    // Player reports its landing rather than knowing that sound exists. These assert the
+    // report itself, which is the half that can be checked without a sound card.
+    val faller = Player(object : SolidWorld { override fun isSolid(x: Float, y: Float, z: Float) = y < 1f })
+    faller.position.set(0.5f, 12f, 0.5f)
+    // Run until grounded, *without* consuming the report — reading it inside the loop
+    // condition would throw away the very thing being asserted.
+    var steps = 0
+    while (steps < 400 && !faller.isGrounded) { faller.step(); steps++ }
+
+    val landing = faller.consumeLanding()
+    check("a long fall reports a landing", landing != null && landing > 6f, "got $landing")
+    check("the landing is reported exactly once", faller.consumeLanding() == null)
+    check("standing still does not report another landing", run {
+        repeat(30) { faller.step() }
+        faller.consumeLanding() == null
+    })
+    // Under MIN_FALL_TO_LAND the report is suppressed at the source rather than being
+    // returned and filtered by the caller, so nothing is ever emitted for a hop.
+    val hopper = Player(object : SolidWorld { override fun isSolid(x: Float, y: Float, z: Float) = y < 1f })
+    hopper.position.set(0.5f, 2.5f, 0.5f)
+    hopper.velocity.set(0f, 0.25f, 0f)
+    var hopLandings = 0
+    repeat(120) { hopper.step(); if (hopper.consumeLanding() != null) hopLandings++ }
+    check("a short hop does not report a landing at all", hopLandings == 0,
+        "reported $hopLandings landings for a sub-threshold hop")
+
+    // The real reason the threshold exists: a fast arrival stops short of the surface and
+    // keeps falling in small increments, and each of those is a genuine airborne transition.
+    // Without the threshold this is a machine gun of landing noises.
+    val wobbler = Player(object : SolidWorld { override fun isSolid(x: Float, y: Float, z: Float) = y < 1f })
+    wobbler.position.set(0.5f, 30f, 0.5f)
+    var i = 0
+    while (i < 600 && !wobbler.isGrounded) { wobbler.step(); i++ }
+    wobbler.consumeLanding()
+    var spurious = 0
+    repeat(200) { wobbler.step(); if (wobbler.consumeLanding() != null) spurious++ }
+    check("the settling wobble after a hard landing does not re-report", spurious == 0,
+        "reported $spurious spurious landings while standing still")
+
     println("\n== Slot click merge arithmetic ==")
     val inv = Inventory()
     check("a pickup lands in the hotbar first", inv.addItem(BlockType.STONE) && inv.hotbar[0]?.type == BlockType.STONE)

@@ -43,6 +43,12 @@ data class TileRef(val tx: Int, val ty: Int)
 // --- Block Definitions ---
 enum class Face { TOP, BOTTOM, NORTH, SOUTH, WEST, EAST }
 
+/**
+ * What a Block Type is made of. Decides how it Sounds, and nothing else about it — a
+ * Material is not a Tile, and it is not a Block Type. See CONTEXT.md.
+ */
+enum class Material { EARTH, STONE, WOOD, FOLIAGE }
+
 /** Every face of a block type draws the same tile. */
 private fun allFaces(tile: TileRef) = Face.entries.associateWith { tile }
 
@@ -86,6 +92,24 @@ enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<F
             GRASS -> DIRT
             LEAVES -> AIR
             else -> this
+        }
+
+    /**
+     * What this Block Type is made of, which decides how it Sounds. Null for AIR, which
+     * has no substance and so cannot be walked on, struck, or set down.
+     *
+     * Many Block Types share one Material: grass and dirt are both earth, stone and
+     * bedrock both stone. Keeping that grouping here — rather than giving every Block
+     * Type its own Sound — is why adding a new Block Type is a one-line change and not a
+     * new sound to design.
+     */
+    val material: Material?
+        get() = when (this) {
+            GRASS, DIRT -> Material.EARTH
+            STONE, BEDROCK -> Material.STONE
+            WOOD -> Material.WOOD
+            LEAVES -> Material.FOLIAGE
+            AIR -> null
         }
 
     val texX: Int get() = primary.tx
