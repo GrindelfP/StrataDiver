@@ -1,5 +1,6 @@
 package check
 
+import org.joml.Vector2f
 import org.joml.Vector3f
 import to.grindelf.stratadiver.*
 
@@ -243,6 +244,73 @@ fun main() {
     check("moving the player re-centres the map",
         moved.pixels[8 * 16 + 8] == Minimap.colourOf(streamer.surfaceAt(20, 12)!!.type),
         "got ${Integer.toHexString(moved.pixels[8 * 16 + 8])}")
+
+    println("\n== Minimap: the heading must be a unit vector at every pitch ==")
+    // The player marker is drawn by measuring a fragment's distance perpendicular to the
+    // heading and its distance along it. Both tests are only meaningful for a unit vector,
+    // and the raw look direction is a unit *3D* vector whose horizontal part is cos(pitch).
+    // Handing that over raw made the marker's size 1/cos(pitch): fine looking level, and
+    // at 89° the permitted width is 0.69 against a disc of radius 0.5, so the tick
+    // covered the map. Asserting the length is the whole regression test.
+    val headed = Minimap(streamer, cells = 16)
+    val looker2 = Player(object : SolidWorld { override fun isSolid(x: Float, y: Float, z: Float) = false })
+
+    check("heading is unit length looking level",
+        run {
+            looker2.front.set(1f, 0f, 0f)
+            kotlin.math.abs(headed.heading(looker2.front).length() - 1f) < 1e-4f
+        })
+
+    // Sweep every pitch the player can actually reach. This is the regression test for
+    // the marker growing as you look up.
+    var worstPitch = Int.MIN_VALUE
+    var worstDeviation = -1f
+    for (pitchDegrees in -89..89) {
+        val pitch = Math.toRadians(pitchDegrees.toDouble())
+        // Reproduce exactly what Player.look produces: a unit 3D direction.
+        looker2.front.set(
+            kotlin.math.cos(pitch).toFloat(),
+            kotlin.math.sin(pitch).toFloat(),
+            0.6f
+        ).normalize()
+        val deviation = kotlin.math.abs(headed.heading(looker2.front).length() - 1f)
+        if (deviation > worstDeviation) {
+            worstDeviation = deviation
+            worstPitch = pitchDegrees
+        }
+    }
+    check("heading is unit length at EVERY pitch from -89 to +89",
+        worstDeviation < 1e-4f,
+        "worst deviation $worstDeviation at pitch $worstPitch")
+
+    check("looking straight up does not send the heading to zero", run {
+        looker2.front.set(0f, 1f, 0f)
+        val h = headed.heading(looker2.front)
+        kotlin.math.abs(h.length() - 1f) < 1e-4f
+    })
+
+    // A glance at the sky must not spin the marker: the heading the player last had while
+    // looking horizontally is still the true heading.
+    looker2.front.set(0f, 0f, 1f)   // facing south, horizontal
+    val heldHeading = Vector2f(headed.heading(looker2.front))
+    looker2.front.set(0f, 1f, 0f)   // now straight up
+    val duringVertical = headed.heading(looker2.front)
+    check("a vertical glance keeps the last usable heading rather than snapping",
+        heldHeading.x == duringVertical.x && heldHeading.y == duringVertical.y,
+        "before=$heldHeading during=$duringVertical")
+
+    check("a vertical view before any horizontal one still gets a unit heading", run {
+        val virgin = Minimap(streamer, cells = 8)
+        looker2.front.set(0f, 1f, 0f)
+        kotlin.math.abs(virgin.heading(looker2.front).length() - 1f) < 1e-4f
+    })
+
+    check("heading matches yaw when the player looks along it", run {
+        val yaw = 2.5 // radians, not axis-aligned
+        looker2.front.set(kotlin.math.cos(yaw).toFloat(), 0f, kotlin.math.sin(yaw).toFloat()).normalize()
+        val h = headed.heading(looker2.front)
+        kotlin.math.abs(h.x - looker2.front.x) < 1e-5f && kotlin.math.abs(h.y - looker2.front.z) < 1e-5f
+    })
 
     println("\n== Slot click merge arithmetic ==")
     val inv = Inventory()

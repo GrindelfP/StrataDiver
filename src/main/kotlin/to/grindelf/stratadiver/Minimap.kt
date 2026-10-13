@@ -1,7 +1,9 @@
 package to.grindelf.stratadiver
 
+import org.joml.Vector2f
 import org.joml.Vector3f
 import java.nio.ByteBuffer
+import kotlin.math.sqrt
 
 /**
  * How a Block Type reads when seen from directly above.
@@ -62,11 +64,49 @@ class Minimap(
     private var lastCentreX = Int.MIN_VALUE
     private var lastCentreZ = Int.MIN_VALUE
 
+    /** The player's heading in map space. Owned here, read by the shader every frame. */
+    private val heading = Vector2f(0f, -1f)
+    private var headingValid = false
+
     val refreshIntervalNanos = 250_000_000L
 
     /** Call whenever a Cell changes, so the map cannot lag behind a build. */
     fun invalidate() {
         dirty = true
+    }
+
+    /**
+     * Where the player is facing, as a direction in map space. Always unit length.
+     *
+     * Pitch is dropped, and it must be. The shader draws the facing tick by measuring a
+     * fragment's perpendicular distance from this vector and its distance along it, and
+     * both of those tests are only meaningful for a *unit* vector — hand them one of
+     * length L and the tick comes out L times too wide and L times too long.
+     *
+     * That is not a hypothetical. `Player.front` is a normalised 3D direction, so its
+     * horizontal part is `cos(pitch)`: hand that over raw and the marker is
+     * `1/cos(pitch)` times its intended size, which is fine until you look up, and then
+     * at 89° — 0.0175 — the permitted width is 0.69 against a disc of radius 0.5. The
+     * tick swallowed the map. A plan view has no vertical component to show anyway, so
+     * dropping pitch is both the fix and the correct reading of a heading.
+     */
+    fun heading(front: Vector3f): Vector2f {
+        val x = front.x
+        val z = front.z
+        val length = sqrt(x * x + z * z)
+
+        if (length > DEGENERATE_HEADING) {
+            heading.set(x / length, z / length)
+        } else if (!headingValid) {
+            // Looking straight up or down before ever having looked horizontally. The map
+            // genuinely does not know which way is which, so it says north rather than
+            // reporting a direction made of zeros.
+            heading.set(0f, -1f)
+            headingValid = true
+        }
+        // Otherwise: keep the last heading that had a horizontal component. Snapping to
+        // north whenever the player glances at the sky would make the marker spin.
+        return heading
     }
 
     /**
@@ -143,6 +183,16 @@ class Minimap(
     }
 
     companion object {
+        /**
+         * Below this horizontal length a look direction has no usable heading in a plan
+         * view, and the last good one is kept instead.
+         *
+         * Pitch is clamped at 89°, so a real heading never gets shorter than about 0.0175
+         * and this only fires on a genuinely vertical view — or on a caller passing
+         * something that is not a direction at all.
+         */
+        private const val DEGENERATE_HEADING = 1e-3f
+
         /** The colour of a Block Type on the Minimap, or null if it has none. */
         fun colourOf(type: BlockType): Int? = MAP_COLOURS[type]
 

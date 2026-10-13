@@ -100,6 +100,10 @@ object Hud {
         val cells = map.cells
         val origin = (map.radius + 0.5f) / cells
 
+        // Where the player is facing on a plan view. Owned by the map because deciding
+        // what to do about looking straight up needs state — the last usable heading.
+        val heading = map.heading(player.front)
+
         ui.minimap(
             x = ui.width - diameter - margin,
             y = margin,
@@ -107,10 +111,11 @@ object Hud {
             texture = texture,
             originX = origin,
             originY = origin,
-            // Facing in map space, where +y is map-down. The player's forward is (x, z) and
-            // the map's own downward direction is +z, so the vector carries over as-is.
-            facingX = player.front.x,
-            facingY = player.front.z
+            // The heading, normalised and pitch-free. Not `player.front` directly: the
+            // shader's tick is sized in units of this vector's length, so an un-normalised
+            // one makes the marker grow as the player looks up and down.
+            facingX = heading.x,
+            facingY = heading.y
         )
 
         ui.end()
