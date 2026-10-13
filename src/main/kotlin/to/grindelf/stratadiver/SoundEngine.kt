@@ -84,7 +84,29 @@ class SoundEngine {
      * downstream should ever need to know.
      */
     fun start(): Boolean {
-        org.lwjgl.openal.ALC.create()
+        // Everything here is inside a catch because "audio is optional" has to mean it.
+        // A missing native library, a busy device, an OpenAL that refuses a context: all
+        // of them are a quiet game, and none of them may stop the game starting. The
+        // previous version crashed the game on launch the first time it met one.
+        return try {
+            openDevice()
+        } catch (e: Throwable) {
+            // UnsatisfiedLinkError, IllegalStateException, whatever the platform decides
+            // to throw. Deliberately Throwable: an Error from a native loader is not an
+            // Exception, and catching only Exception would let the crash through.
+            println("[sound] unavailable (${e::class.simpleName}: ${e.message}); running silently")
+            false
+        }
+    }
+
+    private fun openDevice(): Boolean {
+        // `ALC` creates itself in a static initialiser, unless the system property
+        // org.lwjgl.system.Configuration.OPENAL_EXPLICIT_INIT is set. Calling create()
+        // unconditionally therefore throws "ALC has already been created" — the class was
+        // initialised by the reference to it on the line above.
+        if (org.lwjgl.openal.ALC.getFunctionProvider() == null) {
+            org.lwjgl.openal.ALC.create()
+        }
 
         val device = org.lwjgl.openal.ALC10.alcOpenDevice(null as java.nio.ByteBuffer?)
         if (device == NULL) {
@@ -92,10 +114,21 @@ class SoundEngine {
             return false
         }
 
-        val context = org.lwjgl.openal.ALC10.alcCreateContext(
-            device,
-            org.lwjgl.system.MemoryUtil.memAllocInt(1).also { it.put(0, 0); it.flip() }
-        )
+        // Attributes are (name, value) pairs, terminated by a zero name. The frequency is
+        // pinned to the rate the sounds were synthesized at, so OpenAL is not asked to
+        // resample every buffer on the way out.
+        //
+        // Built with *relative* puts before flip(). Writing with an absolute put and then
+        // flipping inverts a buffer whose position never moved, and produces one with
+        // negative remaining — which surfaces as "Number of remaining elements is 0" from
+        // deep inside LWJGL and a context that is never created.
+        val attributes = org.lwjgl.system.MemoryUtil.memAllocInt(3)
+        attributes.put(org.lwjgl.openal.ALC10.ALC_FREQUENCY).put(Synth.SAMPLE_RATE)
+        attributes.put(0)
+        attributes.flip()
+
+        val context = org.lwjgl.openal.ALC10.alcCreateContext(device, attributes)
+        org.lwjgl.system.MemoryUtil.memFree(attributes)
         if (context == NULL) {
             println("[sound] no audio context available; running silently")
             org.lwjgl.openal.ALC10.alcCloseDevice(device)
@@ -168,6 +201,23 @@ class SoundEngine {
         pitch: Float = 1f
     ) {
         if (!isAvailable) return
+        // A device can also disappear mid-session — headphones unplugged, a device
+        // claimed by another app. Playing must never be the thing that kills a frame.
+        try {
+            playInternal(occasion, material, position, gain, pitch)
+        } catch (e: Throwable) {
+            isAvailable = false
+            println("[sound] playback failed (${e::class.simpleName}); disabling audio")
+        }
+    }
+
+    private fun playInternal(
+        occasion: Occasion,
+        material: Material,
+        position: Vector3f?,
+        gain: Float,
+        pitch: Float
+    ) {
         val buffer = buffers[occasion to material] ?: return
         val index = freeSource() ?: return
         val source = sources[index]
@@ -228,9 +278,15 @@ class SoundEngine {
     /** Frees every OpenAL object. */
     fun stop() {
         if (!isAvailable) return
-        stopAllSources()
-        alDeleteBuffers(buffers.values.toIntArray())
-        alDeleteSources(sources)
+        try {
+            stopAllSources()
+            alDeleteBuffers(buffers.values.toIntArray())
+            alDeleteSources(sources)
+        } catch (e: Throwable) {
+            // Teardown must not throw either: the window is already going away, and a
+            // failure to free an audio buffer is not worth a stack trace on the way out.
+            println("[sound] teardown problem (${e::class.simpleName}); ignoring")
+        }
         buffers.clear()
         isAvailable = false
     }
