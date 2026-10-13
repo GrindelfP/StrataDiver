@@ -33,6 +33,7 @@ import org.lwjgl.opengl.GL11.glGenTextures
 import org.lwjgl.opengl.GL11.glLineWidth
 import org.lwjgl.opengl.GL11.glTexImage2D
 import org.lwjgl.opengl.GL11.glTexParameteri
+import org.lwjgl.opengl.GL11.glTexSubImage2D
 import org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE
 import org.lwjgl.opengl.GL13.GL_TEXTURE0
 import org.lwjgl.opengl.GL13.glActiveTexture
@@ -90,6 +91,10 @@ class StrataDiver {
 
         private const val MOUSE_SENSITIVITY = 0.1f
 
+        /** The Minimap's disc, and its inset from the screen's top-right corner. */
+        private const val MINIMAP_DIAMETER = 208f
+        private const val MINIMAP_MARGIN = 12f
+
         /** How close a Dropped Item must get to the player's feet to be collected. */
         private const val PICKUP_RADIUS = 0.5f
 
@@ -102,7 +107,6 @@ class StrataDiver {
     private var atlasTexture: Int = 0
     private lateinit var itemCube: Mesh
     private lateinit var selectionBox: Mesh
-    private lateinit var minimap: Mesh
 
     // --- The game's parts ---
     private val streamer = ChunkStreamer()
@@ -126,6 +130,22 @@ class StrataDiver {
 
     /** The stack the cursor is carrying between slots while a GUI layer is open. */
     private var cursorItem: ItemStack? = null
+
+    /** The Minimap's model: Surfaces, colours and freshness. No GL of its own. */
+    private lateinit var minimap: Minimap
+    private var minimapTexture = 0
+    private lateinit var minimapMesh: Mesh
+
+    /**
+     * How much of the map's own world to generate per frame.
+     *
+     * A 64-block disc reaches five Chunks across and sixteen layers deep — around 400 of
+     * them, and each runs Perlin noise over 4096 Cells. Asking for all of it in one frame
+     * is a visible hitch at spawn. A handful per frame turns it into something the player
+     * cannot notice, and because it is nearest-first the middle fills in first: which is
+     * the part being looked at.
+     */
+    private val minimapChunkBudget = 12
 
     /** The Cell the player is looking at this frame, and the face they entered it through. */
     private var aimedAt: RaycastResult? = null
@@ -183,7 +203,9 @@ class StrataDiver {
         atlasTexture = uploadAtlas()
         itemCube = Geometry.upload(UNIT_CUBE, Geometry.POS_UV_NORMAL)!!
         selectionBox = Geometry.upload(SELECTION_BOX, Geometry.POS_UV)!!
-        minimap = Geometry.upload(MINIMAP_QUAD, Geometry.POS_UV)!!
+        minimapMesh = Geometry.upload(UNIT_SQUARE, Geometry.POS_UV)!!
+        minimap = Minimap(streamer)
+        minimapTexture = uploadMinimapTexture()
         ui = UiPass(shader, WINDOW_WIDTH, WINDOW_HEIGHT)
         player = Player(streamer)
 
@@ -221,6 +243,43 @@ class StrataDiver {
                 ControlMode.INTERACTIVE -> onInteractiveClick(button)
             }
         }
+    }
+
+    /**
+     * The map's texture: one pixel per Cell, rewritten in place as the world changes.
+     *
+     * Uploaded once here with its storage, then updated with `glTexSubImage2D` rather than
+     * reallocated — the minimap is redrawn several times a second for the life of the
+     * process, and reallocating it each time would make that a per-frame allocation for
+     * no reason.
+     *
+     * NEAREST on both filters, deliberately. The disc is 208px across and the texture is
+     * 64, so linear filtering would interpolate between Cells that do not touch and draw
+     * terrain that does not exist — at 2.25 screen pixels per Cell, blur is a lie.
+     */
+    private fun uploadMinimapTexture(): Int {
+        val id = glGenTextures()
+        glBindTexture(GL_TEXTURE_2D, id)
+        glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_RGBA, minimap.cells, minimap.cells, 0,
+            GL_RGBA, GL_UNSIGNED_BYTE, minimap.toRgbaBytes()
+        )
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        // Clamp, not repeat: at the disc's edge the corners are discarded anyway, and a
+        // repeat wrap would smear one edge into the other.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        return id
+    }
+
+    /** Pushes the current Surfaces to the GPU, in place. */
+    private fun uploadMinimapPixels() {
+        glBindTexture(GL_TEXTURE_2D, minimapTexture)
+        glTexSubImage2D(
+            GL_TEXTURE_2D, 0, 0, 0, minimap.cells, minimap.cells,
+            GL_RGBA, GL_UNSIGNED_BYTE, minimap.toRgbaBytes()
+        )
     }
 
     /** The Atlas, mipmapped and NEAREST-magnified. */
@@ -273,6 +332,7 @@ class StrataDiver {
     private fun tick() {
         player.step()
         streamer.update(player.position)
+        updateMinimap()
 
         val iterator = entities.iterator()
         while (iterator.hasNext()) {
@@ -289,13 +349,37 @@ class StrataDiver {
         }
     }
 
+    /**
+     * Brings the Minimap up to date, and tells the world to make whatever it is missing.
+     *
+     * Generation happens here rather than inside the map because the map is the thing that
+     * needs it: it reaches far past the streamer's vertical band, so a full-height read of
+     * a 64-block disc requires Chunks the streamer will never ask for on its own.
+     */
+    private fun updateMinimap() {
+        val centreX = kotlin.math.floor(player.position.x).toInt()
+        val centreZ = kotlin.math.floor(player.position.z).toInt()
+
+        val complete = streamer.ensureSurfaceKnown(
+            centreX, centreZ,
+            Minimap.coverageRadius(minimap.cells),
+            minimapChunkBudget
+        )
+
+        // Only draw once the map's whole area is known. Rebuilding into a partly-generated
+        // world every frame would mean uploading a picture that is mostly Unknown, and
+        // would keep the texture busy for as long as the player stands near a frontier.
+        // The disc stays as last drawn until there is something new worth showing.
+        if (!complete) return
+
+        // Reported rather than diffed: hashing 4096 pixels every frame to notice a change
+        // that a flag already knows about is work for nothing.
+        if (minimap.refreshIfDue(player.position, System.nanoTime())) uploadMinimapPixels()
+    }
+
     private fun drawFrame(sunDir: Vector3f, moonDir: Vector3f) {
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
         shader.use()
-
-        // Reset the minimap for the 3D world. The minimap pass is parked — see
-        // drawMinimap() — but this must be off or the whole world is drawn as a map.
-        shader.setInt("isMap", 0)
 
         shader.setVec3("sunDir", sunDir.x, sunDir.y, sunDir.z)
         shader.setVec3("moonDir", moonDir.x, moonDir.y, moonDir.z)
@@ -310,9 +394,9 @@ class StrataDiver {
 
         drawWorld()
         drawSelection()
-        drawMinimap()
 
         // The GUI goes last and flat, once the 3D pass has handed depth testing back.
+        Hud.minimap(ui, minimapTexture, minimap, player, MINIMAP_DIAMETER, MINIMAP_MARGIN)
         Hud.crosshair(ui)
         fps.render(ui)
         Hud.hotbar(ui, layout, inventory, selectedSlot)
@@ -358,16 +442,6 @@ class StrataDiver {
         glBindVertexArray(selectionBox.vao)
         glDrawArrays(GL_LINES, 0, selectionBox.vertexCount)
         shader.setInt("isGui", 0)
-    }
-
-    /** Parked. The shader still has a full `isMap` branch and the quad still exists, but
-     *  nothing draws it: the minimap was switched off when the GUI moved to screen space. */
-    private fun drawMinimap() {
-        // shader.setInt("isMap", 1)
-        // shader.setFloat("mapZoom", 50.0f)
-        // shader.setVec2("playerPos", player.position.x, player.position.z)
-        // glBindVertexArray(minimap.vao)
-        // glDrawArrays(GL_TRIANGLES, 0, 6)
     }
 
     // --- Input ---
@@ -429,6 +503,10 @@ class StrataDiver {
         if (type == BlockType.BEDROCK) return // The floor of the world stays put
 
         streamer.setBlock(block.x, block.y, block.z, BlockType.AIR)
+        // The world changed under the Minimap. Marking it here rather than leaving the map
+        // to poll is what makes "break a block, see it on the map" immediate instead of
+        // up to a quarter-second late.
+        minimap.invalidate()
 
         // A Block Type decides what it Drops: grass Drops dirt, leaves Drop nothing, and
         // everything else Drops itself.
@@ -449,6 +527,7 @@ class StrataDiver {
 
         val type = inventory.hotbar[selectedSlot]?.type ?: BlockType.STONE
         streamer.setBlock(placePos.x, placePos.y, placePos.z, type)
+        minimap.invalidate()
     }
 
     // --- Touching the inventory ---
@@ -513,7 +592,7 @@ class StrataDiver {
         // the driver holding the world's vertex buffers.
         streamer.releaseAll()
         ui.release()
-        minimap.release()
+        minimapMesh.release()
         glfwDestroyWindow(window)
         glfwTerminate()
     }

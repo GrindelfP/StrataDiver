@@ -155,12 +155,23 @@ val SELECTION_BOX = FloatArray(EDGES.size / 3 * 5).also { box ->
     }
 }
 
-/** The corner of the screen the parked minimap pass would draw into, in NDC. */
-val MINIMAP_QUAD = floatArrayOf(
-    -0.425f, 0.95f, 0f, 0f, 1f,
-    -0.425f, 0.55f, 0f, 0f, 0f,
-    0.575f, 0.55f, 0f, 1f, 0f,
-    -0.425f, 0.95f, 0f, 0f, 1f,
-    0.575f, 0.55f, 0f, 1f, 0f,
-    0.575f, 0.95f, 0f, 1f, 1f
+/**
+ * The Minimap's quad: a unit square, drawn in screen space and sized by the model matrix.
+ *
+ * The shader turns this square into a disc by discarding its corners, so the geometry is
+ * deliberately just a square — and its UVs are bare 0..1, which the vertex shader passes
+ * through untouched because the minimap's UVs are map coordinates, not atlas coordinates.
+ *
+ * This replaces a parked `MINIMAP_QUAD` that was expressed in NDC. That one had been
+ * given hand-typed corner coordinates that no longer matched the aspect-corrected square
+ * it was originally computed from — it described a strip three times too wide. Nothing
+ * was ever drawn with it, so it was wrong in a file rather than on screen.
+ */
+val UNIT_SQUARE = floatArrayOf(
+    -0.5f, -0.5f, 0f, 0f, 0f,
+    0.5f, -0.5f, 0f, 1f, 0f,
+    0.5f, 0.5f, 0f, 1f, 1f,
+    -0.5f, -0.5f, 0f, 0f, 0f,
+    0.5f, 0.5f, 0f, 1f, 1f,
+    -0.5f, 0.5f, 0f, 0f, 1f
 )

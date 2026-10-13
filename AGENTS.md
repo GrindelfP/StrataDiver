@@ -50,6 +50,7 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 | `Hud.kt` | Crosshair, hotbar, inventory, cursor-held item — pure drawing |
 | `FpsCounter.kt` | Frame timing + the seven-segment readout (segment names, not bitmasks) |
 | `SlotLayout.kt` | Where the slots are on screen, and hit-testing. Pure arithmetic, no GL |
+| `Minimap.kt` | The Minimap's model: one Surface per Cell, the palette, and when it is stale. No GL |
 | `World.kt` | `BlockType` enum, `Atlas`, `Chunk` (16×16×16), `MeshGenerator`, `WorldGen`, `PerlinNoise`, `FastNoise` |
 | `Entity.kt` | `Entity`, `DroppedItem`, `EntityRenderer`. Depends on `SolidWorld`, not on the game |
 | `Inventory.kt` | `ItemStack`, `Inventory` (hotbar + main) |
@@ -67,6 +68,14 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 - **Textures**: Procedurally generated 256×256 atlas (4×4 tiles of 64px). Block tiles: grass, dirt, stone, bedrock, wood, leaves. UI tiles: slot frame, selected-slot, panel, crosshair, plus `Atlas.LINE` — opaque white, for wireframes and the FPS font, which must survive the alpha cutout.
 - **Control routing**: All input (per-frame polling, key callback, mouse move, mouse click) routes through a `ControlMode` — `GAMEPLAY` or `INTERACTIVE`. `INTERACTIVE` is active whenever a GUI layer is open (inventory now, escape menu later): gameplay keys are unassigned, the player is frozen, and mouse clicks drive the UI.
 - **GUI**: Flat 2D screen-space quads in an orthographic pass after the 3D world, all through `UiPass`. The hotbar is always-on; the inventory (E) shows a 3×9 grid above it on a Panel. Slots accept clicks (pick up / move / stack via the cursor-held item).
+- **Minimap**: 208px disc, top-right, north-up, 64 Cells across. `Minimap` holds one
+  Surface per Cell and is pure arithmetic; the CPU turns it into a 64×64 `GL_NEAREST`
+  texture and the shader only does the round clip, the rim and the player marker. A
+  fragment shader **cannot** read world data — that is why the map is a texture, and why
+  the old sine-wave `isMap` branch was fiction. See `docs/adr/0001-minimap-as-cpu-filled-texture.md`.
+  It reaches much further than the streamer (5 Chunks across, all 16 layers), so it
+  generates Chunks on demand, a few per frame; until an area is complete the last good
+  picture stays on screen rather than being replaced by one that is mostly Unknown.
 - **Day/night**: `CONST_TIME = true` in the `StrataDiver` companion. Sun/moon direction drives diffuse lighting in the shader.
 - **Physics**: AABB collision per-axis (X, Z, then Y). Gravity = −0.015, jump = 0.25. `Player.position` is the **eye**; the body hangs `Player.HEIGHT` below it, so the feet are at `position.y - 1.8`. A resting player stops up to one gravity step short of the surface — that is the per-frame collision, not a bug.
 - **Block interaction**: Raycast (step 0.1, reach 5.0) → left click breaks, right click places.
@@ -126,6 +135,12 @@ GL context, so pick the strongest check available and say plainly what it could 
   can be driven against a fake world with no GL at all; `SlotLayout` is pure arithmetic. If
   you find yourself reasoning about behaviour you cannot check, the fix is usually to widen a
   seam rather than to squint harder.
+- **Shaders can be checked without a window.** `glslangValidator` validates them offline:
+  `glslangValidator -S vert vertex.glsl && glslangValidator -S frag fragment.glsl`. Use it
+  after every shader edit — a typo in a uniform name is otherwise a silent no-op, because
+  `ShaderProgram` resolves a missing uniform to -1 and every `glUniform*` call on -1 does
+  nothing at all. That tolerance is deliberate, and it means a renamed uniform produces a
+  black or wrong-coloured thing rather than an error.
 - **Anything touching GL** still cannot be verified without the window. Say so, and ask the
   user to run it. Do not let "it compiles" stand in for "it works" — that is how a change
   shipped that rendered the entire world as sky, and how another shipped after "compiles"

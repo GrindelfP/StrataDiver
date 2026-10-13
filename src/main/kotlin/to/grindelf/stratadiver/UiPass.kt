@@ -2,10 +2,15 @@ package to.grindelf.stratadiver
 
 import org.joml.Matrix4f
 import org.lwjgl.opengl.GL11.GL_DEPTH_TEST
+import org.lwjgl.opengl.GL11.GL_TEXTURE_2D
 import org.lwjgl.opengl.GL11.GL_TRIANGLES
+import org.lwjgl.opengl.GL11.glBindTexture
 import org.lwjgl.opengl.GL11.glDisable
 import org.lwjgl.opengl.GL11.glDrawArrays
 import org.lwjgl.opengl.GL11.glEnable
+import org.lwjgl.opengl.GL13.GL_TEXTURE0
+import org.lwjgl.opengl.GL13.GL_TEXTURE1
+import org.lwjgl.opengl.GL13.glActiveTexture
 import org.lwjgl.opengl.GL30.glBindVertexArray
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -22,6 +27,7 @@ import java.nio.FloatBuffer
 class UiPass(private val shader: ShaderProgram, val width: Float, val height: Float) {
 
     private val quad = Geometry.upload(UNIT_QUAD, Geometry.POS_UV)!!
+    private val square = Geometry.upload(UNIT_SQUARE, Geometry.POS_UV)!!
 
     private val stack: FloatBuffer =
         ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -119,6 +125,55 @@ class UiPass(private val shader: ShaderProgram, val width: Float, val height: Fl
     fun line(x: Float, y: Float, w: Float, h: Float, brightness: Float = 1f) =
         tile(x, y, w, h, Atlas.LINE, brightness)
 
-    /** Releases the quad. The GL context must still be alive. */
-    fun release() = quad.release()
+    /**
+     * The Minimap: a screen-space square drawn with `isMinimap` on, so its 0..1 UVs reach
+     * the fragment shader as map coordinates rather than atlas coordinates, and its corners
+     * are discarded into a disc.
+     *
+     * The map's *contents* were decided on the CPU — a fragment shader cannot read the
+     * world's Cells, which is exactly what the sine-wave minimap this replaced got wrong.
+     * What happens here is only the per-pixel work: the round clip, the rim, and the
+     * player marker, all of which are circle and distance problems that belong in a
+     * shader.
+     *
+     * [origin] is the player's position in 0..1 map space and [facing] their heading in
+     * the same space, where +y is downward — the texture's own orientation, so no flip is
+     * needed.
+     */
+    fun minimap(
+        x: Float, y: Float, diameter: Float,
+        texture: Int,
+        originX: Float, originY: Float,
+        facingX: Float, facingY: Float
+    ) {
+        // The map reads a texture of its own on unit 1. Unit 0 keeps the Atlas, which the
+        // world pass bound and every HUD quad after this still depends on.
+        glActiveTexture(GL_TEXTURE1)
+        glBindTexture(GL_TEXTURE_2D, texture)
+        glActiveTexture(GL_TEXTURE0)
+        shader.setInt("minimapMap", 1)
+
+        shader.setVec2("minimapOrigin", originX, originY)
+        shader.setVec2("minimapFacing", facingX, facingY)
+
+        // Entity mode off, or the vertex shader divides these UVs by the atlas size and
+        // samples the wrong part of the wrong texture.
+        shader.setInt("isEntity", 0)
+        shader.setInt("isMinimap", 1)
+        shader.setMatrix(
+            "model",
+            Matrix4f().translate(x + diameter / 2f, y + diameter / 2f, 0f).scale(diameter, diameter, 1f)
+        )
+        glBindVertexArray(square.vao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+
+        shader.setInt("isMinimap", 0)
+        shader.setInt("isEntity", 1)
+    }
+
+    /** Releases the quads. The GL context must still be alive. */
+    fun release() {
+        quad.release()
+        square.release()
+    }
 }

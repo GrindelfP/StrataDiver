@@ -25,6 +25,12 @@ _Avoid_: Section, region
 A vertical line of Cells through the world at one horizontal position, from bedrock upward.
 _Terrain layer_: one of the material bands in a Column (bedrock, stone, dirt, grass).
 
+**Surface**:
+The topmost non-air Cell in a Column, found by scanning down from the ceiling of the
+world. A Column always has a Surface: where the ground is solid, it is the ground; where
+a player has dug down, it is the new floor. The Minimap shows Surfaces.
+_Avoid_: height, ground level, top block, terrain height
+
 ### Appearance
 
 **Atlas**:
@@ -77,3 +83,15 @@ _Avoid_: Solid (a different question)
 **Panel**:
 The surface behind a GUI layer, chosen to contrast with the slot contents drawn on it.
 _Avoid_: Background, GUI background
+
+**Minimap**:
+The round, north-up plan view of the Surfaces around the player, always in the top-right
+corner. It is derived live from the world's Cells — never from a cached image of them —
+so a structure the player builds appears under the same rules as natural terrain.
+_Avoid_: Map, radar, overview, satellite view
+
+**Unknown**:
+A place on the Minimap whose Cell the world has not yet produced. Distinct from a Column
+that is genuinely empty: empty means there is nothing there, Unknown means we do not know.
+The two are never drawn alike.
+_Avoid_: Unloaded, fog, void

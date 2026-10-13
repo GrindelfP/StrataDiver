@@ -63,4 +63,56 @@ object Hud {
         ui.icon(cursorX - 20f, cursorY - 20f, 40f, item.type)
         ui.end()
     }
+
+    /**
+     * The Minimap, top-right. Round, north-up, and always showing the world's current
+     * Surface — a structure the player has just built is on the map before the next frame
+     * is drawn, under exactly the rules natural terrain is.
+     *
+     * Only the round clip, the rim and the player marker happen here in the shader; what
+     * each Cell actually *is* was decided by the CPU, because a fragment shader cannot
+     * read the world. That split is the whole reason this works, and the reason the
+     * version of it that invented sine-wave terrain looked convincing and was fiction.
+     *
+     * The quad is drawn with `isMinimap` on, which routes its 0..1 UVs through as map
+     * coordinates instead of atlas coordinates. Leaving `isEntity` on would divide them
+     * by the atlas size and sample the wrong part of the wrong texture.
+     */
+    fun minimap(
+        ui: UiPass,
+        texture: Int,
+        map: Minimap,
+        player: Player,
+        diameter: Float,
+        margin: Float
+    ) {
+        ui.begin()
+
+        // The player's position within the map, in 0..1.
+        //
+        // This is a constant, not a moving value, and the reason is worth stating: the map
+        // is rebuilt centred on the player every time, so the player is always at the same
+        // place in it — half a Cell in from the middle, because the map is quantised to
+        // whole Cells and the player stands between them. It is computed from the same
+        // radius the map was built with rather than written as 0.5, so that if the map is
+        // ever rebuilt off-centre this follows instead of quietly drawing the marker on
+        // the wrong Cell.
+        val cells = map.cells
+        val origin = (map.radius + 0.5f) / cells
+
+        ui.minimap(
+            x = ui.width - diameter - margin,
+            y = margin,
+            diameter = diameter,
+            texture = texture,
+            originX = origin,
+            originY = origin,
+            // Facing in map space, where +y is map-down. The player's forward is (x, z) and
+            // the map's own downward direction is +z, so the vector carries over as-is.
+            facingX = player.front.x,
+            facingY = player.front.z
+        )
+
+        ui.end()
+    }
 }

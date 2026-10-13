@@ -156,4 +156,90 @@ class ChunkStreamer(
         meshed.forEach { it.releaseMesh() }
         meshed.clear()
     }
+
+    // --- Aboveground reading, for the Minimap ---
+
+    /**
+     * The Surface of the world at this horizontal position, or null if the world has not
+     * produced that place yet.
+     *
+     * Scanning walks Chunk layers downward, skipping ones this world has never made.
+     * That is the one place in the codebase where "missing" and "air" are deliberately
+     * different answers, and the Minimap is the only caller that depends on the
+     * difference: a Column the streamer has not reached is Unknown, not empty, and a map
+     * that conflated them would be confidently wrong about the frontier.
+     */
+    fun surfaceAt(x: Int, z: Int): Surface? {
+        val cx = Math.floorDiv(x, Chunk.SIZE)
+        val cz = Math.floorDiv(z, Chunk.SIZE)
+        val lx = Math.floorMod(x, Chunk.SIZE)
+        val lz = Math.floorMod(z, Chunk.SIZE)
+
+        for (cy in Chunk.HEIGHT_LAYERS - 1 downTo 0) {
+            val chunk = chunks[Triple(cx, cy, cz)] ?: continue
+            val ly = chunk.topmostSolid(lx, lz) ?: continue
+            return Surface(
+                BlockType.getById(chunk.getBlock(lx, ly, lz)),
+                ly + cy * Chunk.SIZE
+            )
+        }
+        return null
+    }
+
+    /**
+     * Generates up to [budget] Chunks that a top-down read of the given area would need,
+     * nearest first, and reports whether that made the whole area known.
+     *
+     * The Minimap covers far more Chunks than the streamer ever holds — a 64-block disc is
+     * five Chunks across and sixteen layers deep, and the streamer keeps only a band
+     * around the player — so reading it honestly means making the world. Left unthrottled
+     * that is hundreds of Chunks of Perlin noise on one frame, a visible hitch at spawn.
+     * Spending a few per frame instead turns it into something the player cannot see.
+     *
+     * The area is treated as known once every Chunk it needs exists, whether this call
+     * made them or an earlier one did.
+     */
+    fun ensureSurfaceKnown(
+        centreX: Int, centreZ: Int,
+        radius: Int,
+        budget: Int,
+        onCreated: (Chunk) -> Unit = {}
+    ): Boolean {
+        val minCX = Math.floorDiv(centreX - radius, Chunk.SIZE)
+        val maxCX = Math.floorDiv(centreX + radius, Chunk.SIZE)
+        val minCZ = Math.floorDiv(centreZ - radius, Chunk.SIZE)
+        val maxCZ = Math.floorDiv(centreZ + radius, Chunk.SIZE)
+
+        val missing = ArrayList<Triple<Int, Int, Int>>()
+        for (cx in minCX..maxCX) {
+            for (cz in minCZ..maxCZ) {
+                for (cy in 0 until Chunk.HEIGHT_LAYERS) {
+                    if (Triple(cx, cy, cz) !in chunks) missing.add(Triple(cx, cy, cz))
+                }
+            }
+        }
+
+        // Nearest first: the player is standing in the middle, and the middle is what
+        // they are trying to read.
+        val centreCX = Math.floorDiv(centreX, Chunk.SIZE)
+        val centreCZ = Math.floorDiv(centreZ, Chunk.SIZE)
+        missing.sortWith(
+            compareBy<Triple<Int, Int, Int>> {
+                val dx = it.first - centreCX
+                val dz = it.third - centreCZ
+                dx * dx + dz * dz
+            }.thenBy { it.second }
+        )
+
+        var made = 0
+        for ((cx, cy, cz) in missing) {
+            if (made >= budget) break
+            onCreated(chunks.getOrPut(Triple(cx, cy, cz)) { Chunk(cx, cy, cz) })
+            made++
+        }
+        return missing.size <= made
+    }
 }
+
+/** What the top of a Column is made of, and how high up it is. */
+data class Surface(val type: BlockType, val worldY: Int)

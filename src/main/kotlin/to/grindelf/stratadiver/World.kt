@@ -158,6 +158,9 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 
         // Shortest trunk worth growing: below this a tree reads as a stump.
         const val MIN_TREE_HEIGHT = 3
+
+        /** Sentinel in the Surface cache for a column that is entirely air. */
+        private const val NO_SURFACE = -1
     }
 
     // 1D array to represent 3D space (x * size*size + y * size + z)
@@ -175,6 +178,13 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
      * inspected without a context.
      */
     var mesh: Mesh? = null
+
+    /**
+     * Per-column topmost non-air local Y, computed on demand and dropped whenever a Cell
+     * changes. Deliberately not persisted: a Column's Surface is derived state, and the
+     * only thing that can invalidate it is a write this class already sees.
+     */
+    private var topmostSolidCache: IntArray? = null
 
     init {
         val seaLevel = 128
@@ -231,7 +241,41 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
     fun setBlock(x: Int, y: Int, z: Int, type: BlockType) {
         if (x in 0 until SIZE && y in 0 until SIZE && z in 0 until SIZE) {
             blocks[x * SIZE * SIZE + y * SIZE + z] = type.id
+            // The cached Surface for this column is now a lie. Invalidating here rather
+            // than in the Minimap is what makes "build something, see it on the map" a
+            // property of the data instead of a thing the map has to remember to do.
+            topmostSolidCache = null
         }
+    }
+
+    /**
+     * The topmost non-air Cell in this column, by local Y, or null if the column is
+     * entirely air.
+     *
+     * Computed once and cached, because scanning it is what the Minimap does 4096 times
+     * per refresh. Invalidated by [setBlock] and by nothing else, which is the whole
+     * reason the Minimap can trust it.
+     */
+    fun topmostSolid(lx: Int, lz: Int): Int? {
+        if (lx !in 0 until SIZE || lz !in 0 until SIZE) return null
+        var cache = topmostSolidCache
+        if (cache == null) {
+            cache = IntArray(SIZE * SIZE) { NO_SURFACE }
+            for (z in 0 until SIZE) {
+                for (x in 0 until SIZE) {
+                    // Downward from this chunk's ceiling; the first non-air Cell wins.
+                    for (y in SIZE - 1 downTo 0) {
+                        if (blocks[x * SIZE * SIZE + y * SIZE + z] != BlockType.AIR.id) {
+                            cache[z * SIZE + x] = y
+                            break
+                        }
+                    }
+                }
+            }
+            topmostSolidCache = cache
+        }
+        val y = cache[lz * SIZE + lx]
+        return if (y == NO_SURFACE) null else y
     }
 
 

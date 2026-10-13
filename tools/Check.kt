@@ -139,6 +139,111 @@ fun main() {
         check("digit $digit has no duplicate segments", segments[i].toSet().size == segments[i].length)
     }
 
+    println("\n== Minimap: Surfaces are read from live Chunks ==")
+    val streamer = ChunkStreamer()
+    // Fully generated, so every column has an answer and nothing reads as Unknown.
+    streamer.ensureSurfaceKnown(0, 0, Minimap.coverageRadius(64), budget = 100_000)
+
+    fun colourAt(x: Int, z: Int): Int? {
+        val surface = streamer.surfaceAt(x, z)
+        return surface?.let { Minimap.colourOf(it.type) }
+    }
+
+    check("a column over natural ground has a Surface", colourAt(0, 0) != null)
+    check("every Column in the covered area is known",
+        (-40..40 step 8).all { x -> (-40..40 step 8).all { z -> colourAt(x, z) != null } })
+
+    // The topmost block must actually be the top: write high above the terrain and check
+    // the map reports the new block, not the ground it covers.
+    //
+    // Written through `Chunk.setBlock` rather than `ChunkStreamer.setBlock`, and that is a
+    // real limitation rather than a convenience: the streamer's write path also re-meshes,
+    // which is a GL call, so the only way to exercise "the map follows what you build"
+    // headlessly is to bypass it. `Chunk.setBlock` makes no GL calls and is what the
+    // streamer calls underneath, so the cache-invalidation path under test is the real one
+    // — but the remesh half of `setBlock` is verified only by a playtest.
+    //
+    // `chunkAt` takes WORLD coordinates, not grid ones. Passing a Chunk layer here floors
+    // to layer 0 and writes into the bedrock band, which looks like a broken minimap and
+    // is not one.
+    val towerY = streamer.surfaceAt(0, 0)!!.worldY + 20
+    val tower = streamer.chunkAt(0, towerY, 0)!!
+
+    check("placing high above terrain is reported", run {
+        tower.setBlock(0, Math.floorMod(towerY, 16), 0, BlockType.WOOD)
+        colourAt(0, 0) == Minimap.colourOf(BlockType.WOOD)
+    }, "got ${Integer.toHexString(colourAt(0, 0) ?: 0)}")
+
+    check("removing it again reveals what it covered", run {
+        tower.setBlock(0, Math.floorMod(towerY, 16), 0, BlockType.AIR)
+        colourAt(0, 0) == Minimap.colourOf(BlockType.GRASS)
+    }, "got ${Integer.toHexString(colourAt(0, 0) ?: 0)}")
+
+    // A dug-out pit must become the new Surface — that is what "topmost non-air" means.
+    check("digging down makes the new floor the Surface", run {
+        val g = streamer.surfaceAt(0, 0)!!.worldY
+        streamer.chunkAt(0, g, 0)!!.setBlock(0, Math.floorMod(g, 16), 0, BlockType.AIR)
+        val s = streamer.surfaceAt(0, 0)!!
+        s.type == BlockType.DIRT && s.worldY == g - 1
+    }, "got ${streamer.surfaceAt(0, 0)}")
+
+    println("\n== Minimap: Unknown is not empty ==")
+    val fresh = ChunkStreamer()
+    check("a world with no Chunks yet reports Unknown, not empty",
+        fresh.surfaceAt(5000, 5000) == null)
+    check("Unknown has its own colour", Minimap.UNKNOWN_COLOUR != Minimap.EMPTY_COLOUR)
+    check("the two greens are actually distinguishable", run {
+        val g = Minimap.colourOf(BlockType.GRASS)!!
+        val l = Minimap.colourOf(BlockType.LEAVES)!!
+        val dr = (g shr 16) - (l shr 16)
+        val dg = (g shr 8 and 0xFF) - (l shr 8 and 0xFF)
+        val db = (g and 0xFF) - (l and 0xFF)
+        // Perceptually far enough apart to tell apart at ~2px.
+        kotlin.math.abs(dr) + kotlin.math.abs(dg) + kotlin.math.abs(db) > 90
+    }, "grass=${Integer.toHexString(Minimap.colourOf(BlockType.GRASS)!!)} " +
+        "leaves=${Integer.toHexString(Minimap.colourOf(BlockType.LEAVES)!!)}")
+
+    println("\n== Minimap: the grid and its bytes ==")
+    val map = Minimap(streamer, cells = 16)
+    map.refreshIfDue(Vector3f(0.5f, 130f, 0.5f), 0L)
+    check("one pixel per Cell", map.pixels.size == 16 * 16)
+    val rgba = map.toRgbaBytes()
+    check("four bytes per pixel, RGBA", rgba.remaining() == 16 * 16 * 4)
+    check("north row first: row 0 is the north edge, so it is known", run {
+        // Row 0 must not be the Unknown tone anywhere in a fully generated area.
+        (0 until 16).all { c ->
+            val px = map.pixels[c]
+            ((px ushr 16) and 0xFF) or ((px ushr 8) and 0xFF) or (px and 0xFF) !=
+                ((Minimap.UNKNOWN_COLOUR ushr 16) and 0xFF) or
+                ((Minimap.UNKNOWN_COLOUR ushr 8) and 0xFF) or
+                (Minimap.UNKNOWN_COLOUR and 0xFF)
+        }
+    })
+    // The map is rebuilt centred on the player, so the middle Cell of the grid is the
+    // Cell they are standing over — and must therefore be their Surface's colour.
+    check("the middle Cell is the one under the player",
+        map.pixels[8 * 16 + 8] == Minimap.colourOf(streamer.surfaceAt(0, 0)!!.type),
+        "got ${Integer.toHexString(map.pixels[8 * 16 + 8])}")
+    check("a refresh that is not due reports that it did nothing", run {
+        val before = map.pixels.copyOf()
+        !map.refreshIfDue(Vector3f(0.5f, 130f, 0.5f), 1L) && before.contentEquals(map.pixels)
+    })
+    check("an invalidate forces the next refresh to rebuild even when not due", run {
+        map.invalidate()
+        map.refreshIfDue(Vector3f(0.5f, 130f, 0.5f), 1L)
+    })
+    check("the interval elapsing forces a rebuild without an invalidate", run {
+        map.refreshIfDue(Vector3f(0.5f, 130f, 0.5f), 1L + map.refreshIntervalNanos)
+    })
+    // A map built at a new position must show that position's ground, and the middle Cell
+    // must be the Cell under the player — the property the player marker relies on, and
+    // the one that breaks first if the map is ever rebuilt off-centre.
+    val moved = Minimap(streamer, cells = 16)
+    moved.refreshIfDue(Vector3f(20.5f, 130f, 12.5f), 0L)
+    check("moving the player re-centres the map",
+        moved.pixels[8 * 16 + 8] == Minimap.colourOf(streamer.surfaceAt(20, 12)!!.type),
+        "got ${Integer.toHexString(moved.pixels[8 * 16 + 8])}")
+
     println("\n== Slot click merge arithmetic ==")
     val inv = Inventory()
     check("a pickup lands in the hotbar first", inv.addItem(BlockType.STONE) && inv.hotbar[0]?.type == BlockType.STONE)
