@@ -100,7 +100,7 @@
                         <argument>-XstartOnFirstThread</argument>
                         <argument>-classpath</argument>
                         <classpath/>
-                        <argument>to.grindelf.stratadiver.MainKt</argument>
+                        <argument>to.grindelf.stratadiver.StrataDiverKt</argument>
                     </arguments>
                 </configuration>
             </plugin>

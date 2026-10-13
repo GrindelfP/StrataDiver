@@ -41,8 +41,7 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 
 | File | Purpose |
 |------|---------|
-| `Main.kt` | Entry point (`fun main()`) — hence the JVM class `MainKt` in `pom.xml`. Nothing else. |
-| `StrataDiver.kt` | The game: window/GL lifecycle, frame order, input routing, entity tick + pickup, break/place (class `StrataDiver`, enum `ControlMode`) |
+| `StrataDiver.kt` | The entry point (`fun main()`, hence JVM class `StrataDiverKt` in `pom.xml`) *and* the game: window/GL lifecycle, frame order, input routing, entity tick + pickup, break/place (class `StrataDiver`, enum `ControlMode`). No separate Main file exists. |
 | `ShaderProgram.kt` | Compiles/links the program; resolves every uniform location **once** and sets it by name |
 | `Geometry.kt` | `Mesh` (vao+vbo+count, released together), `Geometry.upload()`, and the static shapes `UNIT_QUAD`/`UNIT_CUBE`/`SELECTION_BOX`/`MINIMAP_QUAD` |
 | `ChunkStreamer.kt` | Which Chunks exist (`chunks`), which hold GPU memory (`meshed`), block read/write, streaming (interface `SolidWorld`) |

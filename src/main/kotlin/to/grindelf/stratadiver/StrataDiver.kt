@@ -55,6 +55,17 @@ import kotlin.math.sin
 enum class ControlMode { GAMEPLAY, INTERACTIVE }
 
 /**
+ * The entry point, and the game.
+ *
+ * This file is both: the JVM entry class is `to.grindelf.stratadiver.StrataDiverKt`, so
+ * there is no separate Main to hunt for and no second place to look to learn what the
+ * game is.
+ */
+fun main() {
+    StrataDiver().run()
+}
+
+/**
  * The game: it owns the window and the GL context, decides what happens each frame, and
  * wires everything else together.
  *
