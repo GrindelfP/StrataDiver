@@ -19,7 +19,11 @@ private val MAP_COLOURS: Map<BlockType, Int> = mapOf(
     BlockType.DIRT to 0x866043,
     BlockType.STONE to 0x848486,
     BlockType.BEDROCK to 0x3A3A3E,
-    BlockType.WOOD to 0x7A5C38
+    BlockType.WOOD to 0x7A5C38,
+    // The only warm thing on the map, and the only Block Type that is its own light source.
+    // At a glance a yellow speck in the grey reads as "something worth going to", which is
+    // exactly the job a map has when there is one kind of thing worth going to.
+    BlockType.GLOWSTONE to 0xE8C468
 )
 
 /** A Column with nothing in it at all: genuinely empty, and drawn as such. */

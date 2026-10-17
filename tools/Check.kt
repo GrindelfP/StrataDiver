@@ -239,7 +239,7 @@ fun main() {
     })
 
     println("\n== Light: what a Block Type does to it ==")
-    check("nothing emits light yet", BlockType.entries.all { it.emission == 0 })
+    check("exactly one Block Type emits", BlockType.entries.count { it.emission > 0 } == 1)
     check("no Block Type claims to be brighter than full", BlockType.entries.all { it.emission in 0..15 })
     check("attenuation is only claimed by things light passes through", run {
         BlockType.entries.none { it.opaque && it.attenuation > 0 }
@@ -248,6 +248,93 @@ fun main() {
         BlockType.LEAVES.opaque.not() && BlockType.LEAVES.attenuation > 0
     }, "a forest floor should be dimmer than a clearing")
     check("AIR costs a step and nothing more", BlockType.AIR.attenuation == 0)
+
+    // An emitter that is not reachable is not a light source. GLOWSTONE has to be buried in
+    // the stone, not floating in the sky, or the whole Torchlight channel is decoration.
+    check("an emitter is a solid, so it has to be dug out", BlockType.GLOWSTONE.opaque)
+    check("it drops itself, so digging it out yields light", BlockType.GLOWSTONE.drop == BlockType.GLOWSTONE)
+    check("it has a Material, so walking on it is audible", BlockType.GLOWSTONE.material != null)
+    check("it emits less than full daylight", run {
+        BlockType.GLOWSTONE.emission in 1..Light.MAX - 1
+    }, "emitted ${BlockType.GLOWSTONE.emission}")
+
+    println("\n== Light: the atlas has room for exactly what it holds ==")
+    val usedTiles = setOf(
+        Atlas.GRASS_TOP, Atlas.GRASS_SIDE, Atlas.DIRT, Atlas.STONE, Atlas.WOOD_SIDE,
+        Atlas.WOOD_TOP, Atlas.LEAVES, Atlas.GLOWSTONE, Atlas.SLOT, Atlas.SLOT_SELECTED,
+        Atlas.BEDROCK, Atlas.PANEL, Atlas.CROSSHAIR, Atlas.LINE
+    )
+    check("no two Tiles share a slot", usedTiles.size == usedTiles.map { it.tx to it.ty }.toSet().size)
+    check("every Tile is inside the atlas", usedTiles.all {
+        it.tx in 0 until Atlas.TILES && it.ty in 0 until Atlas.TILES
+    })
+    val freeSlots = (0 until Atlas.TILES).flatMap { tx ->
+        (0 until Atlas.TILES).mapNotNull { ty ->
+            if ((tx to ty) in usedTiles.map { it.tx to it.ty }) null else tx to ty
+        }
+    }
+    println("  free atlas slots: $freeSlots")
+    check("the atlas is not silently full", freeSlots.isNotEmpty(),
+        "the next Block Type has to grow the atlas to 8x8")
+
+    // Every Block Type must be drawable, or its Icon samples a tile that was never authored
+    // and the atlas there is whatever was in the buffer — silent, and wrong.
+    //
+    // `filter` first, not `all { it != AIR && ... }`. `all` returns false the instant any
+    // element fails, so excluding AIR inside the predicate excludes nothing at all: AIR is
+    // still in the collection, still evaluated, and still fails. Written this way the
+    // assertion is false for every possible program, which is worth recognising — a check
+    // that cannot pass is not a weak check, it is a broken one.
+    val authored = usedTiles
+    val drawable = BlockType.entries.filter { it != BlockType.AIR }
+    check("every drawable Block Type has a Tile that was actually authored", run {
+        drawable.all { it.primary in authored }
+    }, "missing ${drawable.filter { it.primary !in authored }.map { it.name }}")
+    check("and there is more than one of them", drawable.size >= 6, "only ${drawable.size}")
+    check("the atlas renders without throwing", Art.buildAtlas().remaining() == Atlas.TILES * Atlas.TILE_PX * Atlas.TILES * Atlas.TILE_PX * 4)
+
+    println("\n== Light: glowstone is buried, and the same vein twice ==")
+    // Veins have to be rare enough to be worth finding and common enough to exist. Rather
+    // than assert a number nobody chose on purpose, measure the distribution and assert the
+    // two properties that actually matter: most Chunks have none, and a Chunk that has one
+    // has a *small* one.
+    var chunksWithVein = 0
+    var veinCells = 0
+    var biggestVein = 0
+    val veinSample = 20 * 20 * Chunk.HEIGHT_LAYERS
+    for (cx in 0 until 20) for (cz in 0 until 20) for (cy in 0 until 16) {
+        val chunk = Chunk(cx, cy, cz)
+        var here = 0
+        for (x in 0 until 16) for (y in 0 until 16) for (z in 0 until 16) {
+            if (chunk.getBlock(x, y, z) == BlockType.GLOWSTONE.id) here++
+        }
+        if (here > 0) { chunksWithVein++; veinCells += here; biggestVein = maxOf(biggestVein, here) }
+    }
+    val fraction = chunksWithVein.toFloat() / veinSample
+    println("  $chunksWithVein/$veinSample Chunks hold glowstone (${"%.0f".format(fraction * 100)}%), " +
+            "largest vein $biggestVein, mean ${"%.1f".format(veinCells.toFloat() / chunksWithVein)}")
+    check("most Chunks have none", fraction < 0.35f, "$fraction of Chunks had one")
+    check("but it does occur", fraction > 0.01f, "$fraction of Chunks had one — nothing to find")
+    check("a vein is a vein, not a cavern", biggestVein <= Chunk.GLOWSTONE_VEIN_MAX,
+        "largest vein was $biggestVein")
+    check("veins only replace stone", run {
+        // A vein in a Chunk with no stone at all must produce nothing rather than hang in
+        // the air, which is the failure a bounded search exists to prevent.
+        val sky = Chunk(0, 15, 0)
+        var count = 0
+        for (x in 0 until 16) for (y in 0 until 16) for (z in 0 until 16) {
+            if (sky.getBlock(x, y, z) == BlockType.GLOWSTONE.id) count++
+        }
+        count == 0
+    })
+    check("generating the same Chunk twice gives the same vein", run {
+        fun veins(cx: Int, cy: Int, cz: Int) = Chunk(cx, cy, cz).let { c ->
+            ByteArray(16 * 16 * 16) { i ->
+                if (c.getBlock(i / 256, (i / 16) % 16, i % 16) == BlockType.GLOWSTONE.id) 1 else 0
+            }
+        }
+        veins(7, 5, -3).contentEquals(veins(7, 5, -3))
+    })
 
     println("\n== FPS seven-segment table ==")
     // Named after this exact class of bug: hand-written masks were wrong for 9 of 10

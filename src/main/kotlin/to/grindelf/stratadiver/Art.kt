@@ -110,6 +110,21 @@ object Art {
 
     private val panelPal = mapOf('b' to rgb(198, 198, 198))
 
+    /**
+     * Glowstone: warm, and with lit flecks rather than a uniform glow.
+     *
+     * The flecks matter more here than on any other tile. Once light is per-vertex, a
+     * Block Type that emits is seen at its own brightness against neighbouring stone that
+     * is much darker, and a flat field of one colour at that contrast reads as a hole in
+     * the world rather than as a rock. The variation is what says "surface".
+     */
+    private val glowPal = mapOf(
+        'b' to rgb(198, 158, 84),
+        'd' to rgb(164, 128, 64),
+        'l' to rgb(226, 194, 124),
+        'w' to rgb(255, 246, 210),
+    )
+
     // --- Art ---
     //
     // Row 0 is the top row of the tile as drawn on screen.
@@ -274,6 +289,26 @@ object Art {
         transparent = '.',
     )
 
+    /** Warm rock with lit flecks, so an emitting Block Type still reads as a surface. */
+    private val GLOWSTONE = TileArt(glowPal, listOf(
+        "bdbdbwbdbdbdldbd",
+        "bdwdbdbdblbdbdwd",
+        "bdbdbdldbdwdbdbd",
+        "blbdwdbdbdbdbwbd",
+        "bdblbdbwbdblbdbd",
+        "ldbdbdbdwdbdbdbw",
+        "bdbdblbdbdbdwdbd",
+        "bdldbdbwbdldbdbd",
+        "bwbdbdbdbwbdbdbd",
+        "bdbdldwdbdbdbdld",
+        "wdbdbdbdldbwbdbd",
+        "bdblbdblbdbdbwbd",
+        "bdbdbwbdbdbdbdbl",
+        "bdwdbdbdbdldwdbd",
+        "blbdbdwdbdbdbdbd",
+        "bdbdwdbdblbdbdwd",
+    ), grain = 12)
+
     // Slot frames use a 2px border so the edge-bleed guard ring never eats it.
     private val SLOT = TileArt(slotPal, List(16) { y ->
         when (y) {
@@ -324,6 +359,7 @@ object Art {
         Atlas.WOOD_SIDE to WOOD_SIDE,
         Atlas.WOOD_TOP to WOOD_TOP,
         Atlas.LEAVES to LEAVES,
+        Atlas.GLOWSTONE to GLOWSTONE,
         Atlas.SLOT to SLOT,
         Atlas.SLOT_SELECTED to SLOT_SELECTED,
         Atlas.BEDROCK to BEDROCK,

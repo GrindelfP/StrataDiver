@@ -35,6 +35,12 @@ object Atlas {
 
     // Solid opaque white, for wireframe overlays that must not be discarded.
     val LINE = TileRef(0, 3)
+
+    /**
+     * The one emitting Tile. Last free slot in a 4x4 atlas: the next Block Type needing
+     * art has to either take [LINE]'s row or the atlas grows to 8x8.
+     */
+    val GLOWSTONE = TileRef(1, 3)
 }
 
 /** A tile's position in the atlas grid. */
@@ -90,7 +96,18 @@ enum class BlockType(
         Face.NORTH to Atlas.WOOD_SIDE, Face.SOUTH to Atlas.WOOD_SIDE,
         Face.WEST to Atlas.WOOD_SIDE, Face.EAST to Atlas.WOOD_SIDE
     )),
-    LEAVES(6, false, allFaces(Atlas.LEAVES), attenuation = 1);
+    LEAVES(6, false, allFaces(Atlas.LEAVES), attenuation = 1),
+
+    /**
+     * Emits light, and is the reason the light engine has two channels.
+     *
+     * A full Cube rather than a Torch on a stem: a Block Type here occupies a whole Cell,
+     * and teaching the mesher about half-Cell shapes is a separate piece of work from
+     * teaching the world about light. GLOWSTONE is a real thing in the game this is
+     * modelled on and it needs no new geometry, so it carries the feature for now and a
+     * Torch can arrive later as a shape.
+     */
+    GLOWSTONE(7, true, allFaces(Atlas.GLOWSTONE), emission = 14);
 
     /** The tile this Block Type draws on the given face. */
     fun tile(face: Face): TileRef = faces[face] ?: faces.values.first()
@@ -122,7 +139,7 @@ enum class BlockType(
     val material: Material?
         get() = when (this) {
             GRASS, DIRT -> Material.EARTH
-            STONE, BEDROCK -> Material.STONE
+            STONE, BEDROCK, GLOWSTONE -> Material.STONE
             WOOD -> Material.WOOD
             LEAVES -> Material.FOLIAGE
             AIR -> null
@@ -233,6 +250,16 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
         // Shortest trunk worth growing: below this a tree reads as a stump.
         const val MIN_TREE_HEIGHT = 3
 
+        /**
+         * How likely a Chunk is to hold a GLOWSTONE vein at all, and how many Cells one
+         * runs to. Rare on purpose: it is the only light source in the game, so a world
+         * thick with them would make the Torchlight channel decoration rather than a
+         * thing you dig for.
+         */
+        const val GLOWSTONE_VEIN_CHANCE = 0.15f
+        const val GLOWSTONE_VEIN_MIN = 3
+        const val GLOWSTONE_VEIN_MAX = 7
+
         /** Sentinel in the Surface cache for a column that is entirely air. */
         private const val NO_SURFACE = -1
     }
@@ -311,6 +338,33 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
         if (surfaceLocalY != -1 && random.chance(0.6f)) {
             addSimpleTree(8, surfaceLocalY + 1, 8, random)
         }
+        if (random.chance(GLOWSTONE_VEIN_CHANCE)) addGlowstoneVein(random)
+    }
+
+    /**
+     * A small blob of GLOWSTONE buried in the stone.
+     *
+     * Placed only where there is already stone to replace, so a vein never floats in a
+     * cave the generator did not make and never pokes into a hillside as a glowing
+     * outcrop. Drawn from this Chunk's seeded [random], like the trees, because a Chunk is
+     * released and regenerated as the player walks and anything drawn from a shared
+     * stream would rearrange the world behind them.
+     */
+    private fun addGlowstoneVein(random: WorldGen.Random) {
+        val wanted = GLOWSTONE_VEIN_MIN + random.nextInt(GLOWSTONE_VEIN_MAX - GLOWSTONE_VEIN_MIN + 1)
+        var placed = 0
+        // Bounded attempts rather than an unbounded search: a Chunk above the terrain is
+        // all air and holds no stone at all, and must give up rather than spin.
+        var attempts = 0
+        while (placed < wanted && attempts < 64) {
+            attempts++
+            val x = random.nextInt(SIZE)
+            val y = random.nextInt(SIZE)
+            val z = random.nextInt(SIZE)
+            if (getBlock(x, y, z) != BlockType.STONE.id) continue
+            setBlock(x, y, z, BlockType.GLOWSTONE)
+            placed++
+        }
     }
 
     fun getBlock(x: Int, y: Int, z: Int): Byte {
@@ -355,6 +409,17 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
         if (x in 0 until SIZE && y in 0 until SIZE && z in 0 until SIZE) {
             lightBytes[x * SIZE * SIZE + y * SIZE + z] = packed.toByte()
         }
+    }
+
+    /**
+     * Puts the whole Chunk back to dark.
+     *
+     * A whole-array fill rather than a per-Cell loop because it is exactly what the light
+     * engine does before re-deriving a Chunk, and doing it through [setBlock] would mean
+     * 4096 bounds checks and 4096 cache-hostile writes to make a change that is one memset.
+     */
+    fun clearAllLight() {
+        lightBytes.fill(Light.DARK.toByte())
     }
 
     /**
