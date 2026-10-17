@@ -203,6 +203,52 @@ fun main() {
     check("cutouts are solid but not opaque", BlockType.LEAVES.opaque.not())
     check("bedrock is the floor of the world", BlockType.BEDROCK.id == 4.toByte())
 
+    println("\n== Light: how a Cell's two levels are packed ==")
+    // The packing has one failure mode worth guarding: an id or a level that spills out of
+    // its nibble silently turns into a neighbouring level. Round-tripping every value is
+    // the only check that would notice.
+    check("every level survives the round trip", run {
+        (0..15).all { d -> (0..15).all { t -> Light.pack(d, t).let {
+            Light.day(it) == d && Light.torch(it) == t
+        } } }
+    })
+    check("the two levels do not bleed into each other", run {
+        val fullTorch = Light.pack(day = 0, torch = 15)
+        val fullDay = Light.pack(day = 15, torch = 0)
+        Light.torch(fullTorch) == 15 && Light.day(fullTorch) == 0 &&
+            Light.torch(fullDay) == 0 && Light.day(fullDay) == 15
+    })
+    check("a packed level is one byte", Light.pack(15, 15) in 0..255)
+
+    check("a fresh Cell is dark", run {
+        val dark = Chunk(0, 15, 0)
+        (0 until 16).all { x -> (0 until 16).all { y -> dark.packedLightAt(x, y, 0) == Light.DARK } }
+    })
+    check("writing a Cell invalidates only that Cell's light", run {
+        val lit = Chunk(0, 15, 0)
+        lit.setPackedLight(3, 4, 5, Light.pack(day = 15, torch = 9))
+        val before = lit.packedLightAt(4, 4, 5)
+        lit.setBlock(3, 4, 5, BlockType.STONE)
+        lit.packedLightAt(3, 4, 5) == Light.DARK && lit.packedLightAt(4, 4, 5) == before
+    }, "a rebuilt wall must stop the light it used to pass")
+    check("light outside the Chunk reads dark and writes nothing", run {
+        val lit = Chunk(0, 15, 0)
+        lit.packedLightAt(16, 0, 0) == Light.DARK && lit.packedLightAt(-1, 0, 0) == Light.DARK
+        lit.setPackedLight(0, 16, 0, Light.pack(15, 15))
+        lit.packedLightAt(0, 16, 0) == Light.DARK
+    })
+
+    println("\n== Light: what a Block Type does to it ==")
+    check("nothing emits light yet", BlockType.entries.all { it.emission == 0 })
+    check("no Block Type claims to be brighter than full", BlockType.entries.all { it.emission in 0..15 })
+    check("attenuation is only claimed by things light passes through", run {
+        BlockType.entries.none { it.opaque && it.attenuation > 0 }
+    })
+    check("leaves dim light without blocking it", run {
+        BlockType.LEAVES.opaque.not() && BlockType.LEAVES.attenuation > 0
+    }, "a forest floor should be dimmer than a clearing")
+    check("AIR costs a step and nothing more", BlockType.AIR.attenuation == 0)
+
     println("\n== FPS seven-segment table ==")
     // Named after this exact class of bug: hand-written masks were wrong for 9 of 10
     // digits, and only a human looking at the picture would catch it.

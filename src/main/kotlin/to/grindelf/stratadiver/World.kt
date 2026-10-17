@@ -53,11 +53,27 @@ enum class Material { EARTH, STONE, WOOD, FOLIAGE }
 private fun allFaces(tile: TileRef) = Face.entries.associateWith { tile }
 
 /**
- * A Block Type. `opaque` drives face culling: a face is drawn whenever its
- * neighbour is not opaque. AIR and LEAVES are both non-opaque, so faces against
- * air and against leaves are all kept.
+ * How a Block Type behaves towards light.
+ *
+ * `emission` is the Daylight-or-Torchlight level the Block Type puts into its own Cell and
+ * from there into the world; zero means it is a passive recipient. `attenuation` is how
+ * much light a Block Type takes away *on top of* the one level every single step costs,
+ * for light passing through it. A leaf costs one step plus one, so a forest floor is
+ * dimmer than a clearing; a pane of glass would cost one step and nothing more.
+ *
+ * Only consulted for Block Types that are not [opaque]. An opaque Block Type blocks light
+ * outright and has no attenuation value, because there is no light on the far side to
+ * attenuate. That is a deliberate coupling rather than an oversight: every opaque Block
+ * Type in this world happens to be a solid the sun cannot reach through, and inventing a
+ * third property to say so independently would be a field nothing could yet disagree about.
  */
-enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<Face, TileRef>) {
+enum class BlockType(
+    val id: Byte,
+    val opaque: Boolean,
+    private val faces: Map<Face, TileRef>,
+    val emission: Int = 0,
+    val attenuation: Int = 0
+) {
     AIR(0, false, emptyMap()),
     GRASS(1, true, mapOf(
         Face.TOP to Atlas.GRASS_TOP,
@@ -74,7 +90,7 @@ enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<F
         Face.NORTH to Atlas.WOOD_SIDE, Face.SOUTH to Atlas.WOOD_SIDE,
         Face.WEST to Atlas.WOOD_SIDE, Face.EAST to Atlas.WOOD_SIDE
     )),
-    LEAVES(6, false, allFaces(Atlas.LEAVES));
+    LEAVES(6, false, allFaces(Atlas.LEAVES), attenuation = 1);
 
     /** The tile this Block Type draws on the given face. */
     fun tile(face: Face): TileRef = faces[face] ?: faces.values.first()
@@ -118,6 +134,40 @@ enum class BlockType(val id: Byte, val opaque: Boolean, private val faces: Map<F
     companion object {
         fun getById(id: Byte) = entries.find { it.id == id } ?: AIR
     }
+}
+
+// --- Light ---
+
+/**
+ * A Cell's light: two independent levels, Daylight and Torchlight, each 0..[MAX].
+ *
+ * Packed into a single byte per Cell — Torchlight in the low nibble, Daylight in the high
+ * one — rather than kept as two arrays, because they are always read and written together
+ * and because a Chunk that holds its light in a second 4096-byte array holds twice the
+ * memory for the same information. Every read and write goes through here rather than
+ * touching the raw byte, because the alternative is a `BlockType.getById` that silently
+ * answers AIR for an id with light in its high bits, and that failure looks exactly like
+ * missing terrain.
+ *
+ * The two are kept separate because they answer different questions and fade differently:
+ * Daylight comes down a Column from the sky and does not travel, Torchlight travels out
+ * from an emitter and stops. Merging them into one "brightness" would mean a torch in a
+ * sealed room was brighter than the surface it is standing next to.
+ */
+object Light {
+    /** Full brightness. Light loses one level per Cell travelled and nothing reaches [MAX]. */
+    const val MAX = 15
+
+    const val TORCH_SHIFT = 0
+    const val DAY_SHIFT = 4
+
+    fun torch(packed: Int): Int = (packed shr TORCH_SHIFT) and 0x0F
+    fun day(packed: Int): Int = (packed shr DAY_SHIFT) and 0x0F
+
+    fun pack(day: Int, torch: Int): Int =
+        ((day and 0x0F) shl DAY_SHIFT) or (torch and 0x0F)
+
+    const val DARK = 0
 }
 
 // --- Deterministic World Generation ---
@@ -189,6 +239,15 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
 
     // 1D array to represent 3D space (x * size*size + y * size + z)
     private val blocks = ByteArray(SIZE * SIZE * SIZE)
+
+    /**
+     * This Chunk's light, one packed byte per Cell. See [Light].
+     *
+     * Lives here rather than in the light engine because light is a property of a Cell and
+     * has to outlive the Chunk's triangles: `chunks` is never discarded, so a room you lit
+     * is still lit when you walk away and come back, without being recomputed to be so.
+     */
+    private val lightBytes = ByteArray(SIZE * SIZE * SIZE)
 
     /** This Chunk's place in the world grid. Identity of the *place*, not of the mesh. */
     val position: Triple<Int, Int, Int> = Triple(xOffset, yOffset, zOffset)
@@ -269,6 +328,32 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
             // than in the Minimap is what makes "build something, see it on the map" a
             // property of the data instead of a thing the map has to remember to do.
             topmostSolidCache = null
+            // And so is this Cell's light, for the same reason and with more force: a
+            // wall you have just built has to stop letting light through, and a hole you
+            // have just dug has to start. Whether the levels around it are right is the
+            // light engine's business; what is certain here is that *these two numbers*
+            // describe a world that no longer exists.
+            lightBytes[x * SIZE * SIZE + y * SIZE + z] = Light.DARK.toByte()
+        }
+    }
+
+    /**
+     * This Cell's packed light, or [Light.DARK] outside this Chunk.
+     *
+     * Answers dark rather than throwing past its own bounds, deliberately the same choice
+     * [getBlock] makes with AIR: both are reached from a flood fill that walks in world
+     * coordinates, and a boundary mistake should cost one Cell of light rather than the
+     * frame. The engine's own arithmetic is checked separately for exactly this.
+     */
+    fun packedLightAt(x: Int, y: Int, z: Int): Int {
+        if (x !in 0 until SIZE || y !in 0 until SIZE || z !in 0 until SIZE) return Light.DARK
+        return lightBytes[x * SIZE * SIZE + y * SIZE + z].toInt() and 0xFF
+    }
+
+    /** Writes this Cell's packed light. Outside this Chunk, nothing happens. */
+    fun setPackedLight(x: Int, y: Int, z: Int, packed: Int) {
+        if (x in 0 until SIZE && y in 0 until SIZE && z in 0 until SIZE) {
+            lightBytes[x * SIZE * SIZE + y * SIZE + z] = packed.toByte()
         }
     }
 
