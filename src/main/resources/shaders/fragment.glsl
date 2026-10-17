@@ -4,11 +4,14 @@ out vec4 FragColor;
 
 in vec2 TexCoord;
 in vec3 Normal;
+in vec2 Light;
+in float Shade;
 
 uniform sampler2D textureAtlas;
 uniform vec3 sunDir;
 uniform vec3 moonDir;
 
+uniform bool isEntity; // A Dropped Item is lit by the Cell it lies in, not per-vertex
 uniform bool isGui;   // GUI is drawn unlit, so it never flickers with the time of day
 uniform vec3 tint;    // Per-face brightness for composited Icons
 
@@ -28,6 +31,28 @@ uniform vec2 minimapFacing;
 // Screen-space position of this fragment within the map quad, 0..1. Used for the round
 // clip and the rim, which are circle problems and not texture problems.
 in vec2 MapLocal;
+
+// --- Light ---
+//
+// A Dropped Item is drawn from the plain eight-float cube and has no per-vertex light, so
+// its level arrives here instead. Set per Entity, from the Cell it is lying in.
+uniform vec2 lightLevel;
+
+// Daylight is very slightly cool and Torchlight is distinctly warm, which is the whole
+// reason the two are kept apart rather than merged into one brightness: a tunnel lit by
+// glowstone should read as a different place from the same tunnel at noon, and a single
+// scalar cannot say that.
+const vec3 DAY_COLOUR = vec3(0.97, 0.98, 1.0);
+const vec3 TORCH_COLOUR = vec3(1.0, 0.74, 0.46);
+
+// How dark a fully occluded corner gets. Occlusion is a contact shadow, not darkness, so
+// this never reaches zero — a corner where three blocks meet is dimmer than an open wall,
+// not black.
+const float SHADE_FLOOR = 0.52;
+
+// The floor of a Cell that has no light at all. Small rather than zero so that a sealed
+// room is navigable by memory and by the outline of the selection box.
+const float MIN_LIGHT = 0.07;
 
 void main() {
     // --- The Minimap, and only the Minimap ---
@@ -88,7 +113,29 @@ void main() {
         float moonDiff = max(dot(norm, normalize(moonDir)), 0.0);
         vec3 moonColor = moonDiff * vec3(0.2, 0.3, 0.5);
 
-        finalLight = min(vec3(ambient) + sunColor + moonColor, vec3(1.0));
+        vec3 directional = min(vec3(ambient) + sunColor + moonColor, vec3(1.0));
+
+        // The two light channels, resolved to one colour and one level.
+        vec2 light;
+        float occlusion;
+        if (isEntity) {
+            light = lightLevel;
+            occlusion = 1.0;   // An item is not in the grid, so nothing occludes it.
+        } else {
+            light = Light;
+            occlusion = Shade / 3.0;
+        }
+
+        float level = max(light.x, light.y);
+        vec3 lightColour = light.x >= light.y ? DAY_COLOUR : TORCH_COLOUR;
+
+        // Outdoors this is very close to the old flat lighting, because open sky is 15 and
+        // an unoccluded corner is 3 — so the change is invisible on a bare hillside and
+        // enormous the moment there is a roof, an overhang or a wall.
+        finalLight = directional
+                   * lightColour
+                   * mix(SHADE_FLOOR, 1.0, occlusion)
+                   * (MIN_LIGHT + (1.0 - MIN_LIGHT) * level);
     }
 
     FragColor = vec4(texColor.rgb * finalLight, texColor.a);

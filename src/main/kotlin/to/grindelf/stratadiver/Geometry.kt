@@ -6,6 +6,7 @@ import org.lwjgl.opengl.GL15.GL_STATIC_DRAW
 import org.lwjgl.opengl.GL15.glBindBuffer
 import org.lwjgl.opengl.GL15.glBufferData
 import org.lwjgl.opengl.GL15.glGenBuffers
+import org.lwjgl.opengl.GL20.glDisableVertexAttribArray
 import org.lwjgl.opengl.GL20.glEnableVertexAttribArray
 import org.lwjgl.opengl.GL20.glVertexAttribPointer
 import org.lwjgl.opengl.GL30.glBindVertexArray
@@ -42,8 +43,24 @@ object Geometry {
     /** Position (3) + UV (2). Attributes 0 and 1. */
     const val POS_UV = 5
 
-    /** Position (3) + UV (2) + normal (3). Attributes 0, 1 and 2 — what a Chunk mesh uses. */
+    /** Position (3) + UV (2) + normal (3). Attributes 0, 1 and 2. */
     const val POS_UV_NORMAL = 8
+
+    /**
+     * Position (3) + UV (2) + normal (3) + light (2) + shade (1). Attributes 0..4.
+     *
+     * What a Chunk mesh uses. Light is two floats — Daylight then Torchlight, each already
+     * divided by [Light.MAX] — because the two channels are independent and a shader that
+     * has to unpack them spends its time on arithmetic; shade is the corner occlusion, 0 to
+     * 3, as a separate float rather than packed into the light because it multiplies where
+     * light adds, and folding the two together meant unpicking them again in the shader.
+     *
+     * Both are per-vertex rather than per-face on purpose. That is what makes a corner dark
+     * and the middle of a wall not, which is most of what makes a block read as solid
+     * instead of as a flat sticker — and it is free here, because a face is two triangles
+     * and interpolating across them is what the hardware already does.
+     */
+    const val POS_UV_NORMAL_LIGHT = 11
 
     /**
      * Uploads [vertices] and returns the resulting mesh, or null if there is nothing to
@@ -69,9 +86,22 @@ object Geometry {
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
         glEnableVertexAttribArray(1)
-        if (floatsPerVertex == POS_UV_NORMAL) {
+        if (floatsPerVertex >= POS_UV_NORMAL) {
             glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, 20L)
             glEnableVertexAttribArray(2)
+        }
+        if (floatsPerVertex == POS_UV_NORMAL_LIGHT) {
+            glVertexAttribPointer(3, 2, GL_FLOAT, false, stride, 32L)
+            glEnableVertexAttribArray(3)
+            glVertexAttribPointer(4, 1, GL_FLOAT, false, stride, 40L)
+            glEnableVertexAttribArray(4)
+        } else {
+            // Disabled explicitly rather than left alone. A disabled attribute reads the
+            // *generic* current value, which is global state and not part of the VAO — so
+            // a GUI quad would silently pick up whatever light happened to be current, and
+            // "happened to be current" is not a thing anyone should have to reason about.
+            glDisableVertexAttribArray(3)
+            glDisableVertexAttribArray(4)
         }
 
         return Mesh(vao, vbo, vertices.size / floatsPerVertex)

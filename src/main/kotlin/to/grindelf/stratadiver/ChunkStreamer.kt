@@ -250,7 +250,7 @@ class ChunkStreamer(
 
         chunk.mesh = Geometry.upload(
             MeshGenerator.generateChunkMesh(chunk, this),
-            Geometry.POS_UV_NORMAL
+            Geometry.POS_UV_NORMAL_LIGHT
         )
 
         meshed.add(chunk)

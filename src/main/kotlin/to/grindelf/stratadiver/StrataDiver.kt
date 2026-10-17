@@ -524,7 +524,16 @@ class StrataDiver {
             glDrawArrays(GL_TRIANGLES, 0, mesh.vertexCount)
         }
 
-        EntityRenderer.draw(entities, shader, itemCube)
+        // A dropped item is lit by the Cell it is lying in, not by its own face normals,
+        // so breaking a block in a dark tunnel drops something you cannot see until you
+        // walk into the light.
+        EntityRenderer.draw(entities, shader, itemCube) { pos ->
+            streamer.lightAt(
+                kotlin.math.floor(pos.x).toInt(),
+                kotlin.math.floor(pos.y).toInt(),
+                kotlin.math.floor(pos.z).toInt()
+            )
+        }
     }
 
     /** A wireframe around the Cell the player is looking at. */

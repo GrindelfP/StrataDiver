@@ -45,7 +45,21 @@ fun main() {
     for (cx in 0 until 4) for (cz in 0 until 4) for (cy in 0 until 16) sample.add(Triple(cx, cy, cz))
     val sampleChunks = sample.map { (cx, cy, cz) -> Chunk(cx, cy, cz) }
 
-    val inWorld = object : Neighbourhood {
+    /**
+     * A [LitWorld] that reports no light at all, for mesher checks that are about geometry.
+     *
+     * The mesher needs light now — it writes it into every vertex — so a fake that only
+     * answered [Neighbourhood] no longer type-checks. Reporting darkness is the right answer
+     * for a check about *how many* vertices a Chunk produces, because light never changes
+     * the count; it would only change the numbers inside them.
+     */
+    abstract class UnlitWorld : LitWorld {
+        override fun existingChunkAt(x: Int, y: Int, z: Int): Chunk? = null
+        override fun lightAt(x: Int, y: Int, z: Int): Int = Light.DARK
+        override fun setLight(x: Int, y: Int, z: Int, packed: Int): Chunk? = null
+    }
+
+    val inWorld = object : UnlitWorld() {
         val byPosition = sampleChunks.associateBy { it.position }
         override fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType? {
             val cx = Math.floorDiv(x, 16); val cy = Math.floorDiv(y, 16); val cz = Math.floorDiv(z, 16)
@@ -57,7 +71,7 @@ fun main() {
     }
 
     /** The old mesher's whole model of its neighbours: this Chunk, and AIR past its edge. */
-    fun chunkOnlyNeighbourhood(chunk: Chunk) = object : Neighbourhood {
+    fun chunkOnlyNeighbourhood(chunk: Chunk) = object : UnlitWorld() {
         override fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType = BlockType.getById(
             chunk.getBlock(x - chunk.xOffset * 16, y - chunk.yOffset * 16, z - chunk.zOffset * 16)
         )
@@ -71,9 +85,9 @@ fun main() {
     var chunkOnlyNonEmpty = 0
     var chunksGained = 0
     for (chunk in sampleChunks) {
-        val vertices = MeshGenerator.generateChunkMesh(chunk, inWorld).size / Geometry.POS_UV_NORMAL
+        val vertices = MeshGenerator.generateChunkMesh(chunk, inWorld).size / Geometry.POS_UV_NORMAL_LIGHT
         val naive = MeshGenerator.generateChunkMesh(chunk, chunkOnlyNeighbourhood(chunk))
-            .size / Geometry.POS_UV_NORMAL
+            .size / Geometry.POS_UV_NORMAL_LIGHT
         total += vertices
         chunkOnlyTotal += naive
         if (vertices == 0) allAir++
@@ -90,7 +104,7 @@ fun main() {
         chunkOnlyTotal == 1_213_368, "was $chunkOnlyTotal, expected 1213368")
     check("in-world total is stable run to run", run {
         val again = sampleChunks.sumOf {
-            MeshGenerator.generateChunkMesh(it, inWorld).size / Geometry.POS_UV_NORMAL
+            MeshGenerator.generateChunkMesh(it, inWorld).size / Geometry.POS_UV_NORMAL_LIGHT
         }
         again == total
     }, "re-ran to a different number")
@@ -110,12 +124,12 @@ fun main() {
     // old code was wrong, and the only one where the face count is readable.
     val seam = Chunk(0, 15, 0)
     seam.setBlock(0, 0, 0, BlockType.STONE)
-    val seamWorld = object : Neighbourhood {
+    val seamWorld = object : UnlitWorld() {
         override fun blockAtOrNull(x: Int, y: Int, z: Int) =
             if (x == 1 && y == 240 && z == 0) BlockType.STONE else BlockType.AIR
     }
-    fun facesOf(n: Neighbourhood) =
-        MeshGenerator.generateChunkMesh(seam, n).size / Geometry.POS_UV_NORMAL / 6
+    fun facesOf(n: LitWorld) =
+        MeshGenerator.generateChunkMesh(seam, n).size / Geometry.POS_UV_NORMAL_LIGHT / 6
     check("a lone Cell draws 6 faces", facesOf(chunkOnly) == 6, "got ${facesOf(chunkOnly)}")
     check("a Cell with solid next door draws 5, not 6", facesOf(seamWorld) == 5,
         "got ${facesOf(seamWorld)}")
@@ -1004,6 +1018,170 @@ fun main() {
             }
             lit > 0
         }, "no Cell in the sampled region had any Torchlight at all")
+    }
+
+    println("\n== Mesh: every vertex carries its own light and corner shade ==")
+    // The step from "a Cell knows its light" to "a wall face is drawn at that brightness".
+    // The shader is two multiplies and cannot be checked without a window, but everything
+    // upstream of it can, and it is where a wrong number would hide.
+    run {
+        val stride = Geometry.POS_UV_NORMAL_LIGHT
+        val DAY = 8      // index of daylight within a vertex
+        val TORCH = 9    // index of torchlight
+        val SHADE = 10   // index of corner occlusion
+
+        // The Chunk holding the interesting Cells, meshed against the world it sits in.
+        fun meshOf(f: LitFixture, cx: Int, cy: Int, cz: Int) =
+            MeshGenerator.generateChunkMesh(f.world.existingChunkAt(cx, cy, cz)!!, f.world)
+
+        fun vertexCount(verts: FloatArray) = verts.size / stride
+
+        // --- A block standing alone under open sky ---
+        val open = LitFixture()
+        open.world.set(8, 4, 8, BlockType.STONE)     // one pillar in an otherwise empty world
+        open.lightEverything()
+        val openMesh = meshOf(open, 0, 0, 0)
+
+        check("a lone block still produces a mesh", vertexCount(openMesh) > 0)
+        check("and every vertex is inside the three legal ranges", run {
+            var bad = 0
+            for (i in 0 until vertexCount(openMesh)) {
+                val d = openMesh[i * stride + DAY]
+                val t = openMesh[i * stride + TORCH]
+                val s = openMesh[i * stride + SHADE]
+                if (d < 0f || d > 1f || t < 0f || t > 1f || s < 0f || s > 3f) bad++
+            }
+            bad == 0
+        }, "a light or shade outside its range would be silently clamped by the shader")
+
+        check("and no vertex exceeds full daylight", run {
+            var over = 0
+            for (i in 0 until vertexCount(openMesh)) {
+                if (openMesh[i * stride + DAY] > 1f || openMesh[i * stride + TORCH] > 1f) over++
+            }
+            over == 0
+        })
+
+        // The interesting claim, and it is a real one: a block sitting in open sky lights
+        // everything around and above it, and shades the Cells beneath it. Asserting the
+        // shadow is what keeps "a block on nothing has a dark underside" from silently
+        // becoming "the column scan ignores the block above it".
+        check("the Cells above a block are full daylight", run {
+            var wrong = 0
+            for (i in 0 until vertexCount(openMesh)) {
+                if (openMesh[i * stride + 1] == 5f && openMesh[i * stride + DAY] != 1f) wrong++
+            }
+            wrong == 0
+        }) {
+            "the top of the block (y=5) must read 1.0"
+        }
+        // The underside is shadowed, but only a little — and the exact number is worth
+        // pinning because it is the first place an averaging mistake shows up, as a bright
+        // band along every overhang.
+        //
+        // Its corner light takes the Cell directly below the block and averages it with the
+        // three Cells beside that spot. The Cell below is NOT 0, and this took me three
+        // attempts to accept: the block shades its own column, but light falls *around* a
+        // lone block and back into the space beneath it, so the engine settles that Cell at
+        // 14 rather than 0. (14 + 15 + 15 + 15) / 4 = 14.75, which is 0.9833334 at full scale.
+        //
+        // Asserting this rather than "less than 1.0" is deliberate. "Less than 1.0" passes
+        // for a mesh that is fully flat, and a floating block with a pitch-black underside
+        // would also pass — which is the same bug with a different sign.
+        var darkest = 1f
+        var brightest = 0f
+        for (i in 0 until vertexCount(openMesh)) {
+            darkest = minOf(darkest, openMesh[i * stride + DAY])
+            brightest = maxOf(brightest, openMesh[i * stride + DAY])
+        }
+        check("and its underside is shadowed, but only a little",
+            darkest == 0.9833334f && brightest == 1f) {
+            "expected the mesh to span 0.9833334 (one Cell shaded to 14, averaged with three " +
+                    "at 15) to 1.0 (open sky), got $darkest to $brightest"
+        }
+
+        var openOccluded = 0
+        for (i in 0 until vertexCount(openMesh)) if (openMesh[i * stride + SHADE] != 3f) openOccluded++
+        check("nothing occludes a block standing in the open", openOccluded == 0) {
+            "$openOccluded vertices were occluded by nothing at all"
+        }
+
+        // --- A block tucked into a corner of a solid mass ---
+        val corner = LitFixture()
+        corner.world.fill(-17, 0, -17, 31, 15, 31, BlockType.STONE)
+        corner.world.fill(0, 0, 0, 15, 15, 15, BlockType.AIR)
+        corner.world.set(1, 1, 1, BlockType.STONE)    // in the room's corner: two sides solid
+        corner.world.fill(0, 1, 1, 0, 1, 15, BlockType.STONE)   // wall along -X
+        corner.world.fill(0, 1, 0, 15, 1, 0, BlockType.STONE)   // wall along -Z
+        corner.world.set(1, 0, 1, BlockType.STONE)
+        corner.lightEverything()
+        val cornerMesh = meshOf(corner, 0, 0, 0)
+
+        check("a corner does occlude some of its own corners", run {
+            var darkest = 3f
+            for (i in 0 until vertexCount(cornerMesh)) {
+                darkest = minOf(darkest, cornerMesh[i * stride + SHADE])
+            }
+            darkest < 3f
+        }, "every corner came out unoccluded, so corner shading is not being applied")
+
+        // --- The structural invariant that keeps gradients smooth ---
+        //
+        // Two vertices at the same position belonging to the *same face* must agree on
+        // light and shade. A quad is two triangles and the duplicate vertex they share
+        // exists precisely so both halves interpolate identically; if the copies disagree
+        // the quad is drawn with a crease straight down its diagonal, which reads as a
+        // lighting bug and is not one.
+        //
+        // Only compared within a face. Two different faces meeting at a corner sit at the
+        // same position on purpose and are meant to shade differently — that difference is
+        // what darkens the corner — so comparing across faces fails for the right reason
+        // and tells you nothing. An earlier version of this check did exactly that and
+        // reported 103 mismatches against a correct mesh.
+        val byPosition = HashMap<String, IntArray>()
+        var mismatched = 0
+        var faces = 0
+        for (i in 0 until vertexCount(cornerMesh) / 6) {
+            faces++
+            byPosition.clear()
+            for (v in 0 until 6) {
+                val base = (i * 6 + v) * stride
+                val key = "${cornerMesh[base]},${cornerMesh[base + 1]},${cornerMesh[base + 2]}"
+                val packed = intArrayOf(
+                    (cornerMesh[base + DAY] * 255).toInt(),
+                    (cornerMesh[base + TORCH] * 255).toInt(),
+                    (cornerMesh[base + SHADE] * 255).toInt()
+                )
+                val seen = byPosition.put(key, packed)
+                if (seen != null && (seen[0] != packed[0] || seen[1] != packed[1] || seen[2] != packed[2])) {
+                    mismatched++
+                }
+            }
+        }
+        check("vertices sharing a position share their shading exactly", mismatched == 0) {
+            "$mismatched duplicate vertices across $faces faces would draw a crease down their quad"
+        }
+
+        // --- A sealed room is genuinely dark in its vertex data ---
+        val dark = LitFixture()
+        dark.sealedRoom()
+        dark.world.set(8, 15, 8, BlockType.GLOWSTONE)
+        dark.lightEverything()
+        val darkMesh = meshOf(dark, 0, 1, 0)     // the roof chunk: interior faces, no sky
+
+        check("the roof of a sealed room is lit only by its own emitter", run {
+            var brightest = 0f
+            for (i in 0 until vertexCount(darkMesh)) {
+                brightest = maxOf(brightest, darkMesh[i * stride + TORCH])
+            }
+            brightest > 0f
+        }, "the glowstone inside the room light nothing at all")
+
+        check("and none of it is daylight", run {
+            var lit = 0f
+            for (i in 0 until vertexCount(darkMesh)) lit = maxOf(lit, darkMesh[i * stride + DAY])
+            lit == 0f
+        }, "daylight ${run { var m = 0f; for (i in 0 until vertexCount(darkMesh)) m = maxOf(m, darkMesh[i * stride + DAY]); "%.2f".format(m) }} leaked into a sealed room")
     }
 
     println("\n== Sounds: every Material maps, and AIR does not ==")

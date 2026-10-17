@@ -525,17 +525,39 @@ object MeshGenerator {
 
     private const val ATLAS_SIZE = 4.0f // 4x4 tiles in our generated texture
 
+    // Which axis of a Cell a position is measured along.
+    private const val AXIS_X = 0
+    private const val AXIS_Y = 1
+    private const val AXIS_Z = 2
+
+    // Base offsets into a face's shading block. Each corner occupies three floats —
+    // shade, daylight, torchlight — so a corner's data starts at a multiple of three, and
+    // naming those offsets beats writing `s[9], s[10], s[11]` and hoping.
+    private const val CORNER_00 = 0   // (-1, -1) along the face's two axes
+    private const val CORNER_10 = 3   // (+1, -1)
+    private const val CORNER_11 = 6   // (+1, +1)
+    private const val CORNER_01 = 9   // (-1, +1)
+
+    /** Light divided up by [Light.MAX], so the shader does not repeat the division. */
+    private const val LIGHT_SCALE = 1f / Light.MAX
+
     /**
      * The triangles of [chunk], culling every face whose neighbour hides it.
      *
-     * [neighbourhood] is required rather than optional because a Chunk cannot answer the
-     * only question that matters at its own border. `Chunk.getBlock` returns AIR outside
-     * its own 16×16×16, so asking it about the next Chunk's Cells answered "exposed" for
-     * every boundary face in the world and the mesher drew faces that were buried inside
-     * solid rock. That is wasted geometry today, and it is also the reason light and
-     * corner shading had nowhere to read from.
+     * [world] is required rather than optional because a Chunk cannot answer the only
+     * question that matters at its own border. `Chunk.getBlock` returns AIR outside its own
+     * 16x16x16, so asking it about the next Chunk's Cells answered "exposed" for every
+     * boundary face in the world and the mesher drew faces buried inside solid rock.
+     * Reading across the boundary is also where light comes from: a vertex on a face wants
+     * the light of the Cells around it, and the Cells around it are frequently in a
+     * different Chunk.
+     *
+     * Every vertex carries the light and corner occlusion of its own position, not the
+     * light of the Cell its face belongs to. That is what makes the corner where two walls
+     * meet darker than the middle of either wall, and it is most of what stops a block
+     * reading as a flat sticker.
      */
-    fun generateChunkMesh(chunk: Chunk, neighbourhood: Neighbourhood): FloatArray {
+    fun generateChunkMesh(chunk: Chunk, world: LitWorld): FloatArray {
         val vertices = mutableListOf<Float>()
         val size = Chunk.SIZE
 
@@ -554,24 +576,22 @@ object MeshGenerator {
                     val fz = gz.toFloat()
 
                     // --- FACE CULLING ---
-                    // A face is drawn unless its neighbour hides it. AIR and
-                    // LEAVES are both non-opaque, so faces against open air and
-                    // against leaves are kept; faces buried in stone are not.
-                    //
-                    // Asked in world coordinates, so the neighbour of a Cell on a
-                    // Chunk's border is read from the Chunk it actually lives in.
-                    if (exposed(neighbourhood, gx, gy + 1, gz)) addFaceTop(vertices, fx, fy, fz, blockType)
-                    if (exposed(neighbourhood, gx, gy - 1, gz)) addFaceBottom(vertices, fx, fy, fz, blockType)
-                    if (exposed(neighbourhood, gx, gy, gz - 1)) addFaceNorth(vertices, fx, fy, fz, blockType)
-                    if (exposed(neighbourhood, gx, gy, gz + 1)) addFaceSouth(vertices, fx, fy, fz, blockType)
-                    if (exposed(neighbourhood, gx - 1, gy, gz)) addFaceWest(vertices, fx, fy, fz, blockType)
-                    if (exposed(neighbourhood, gx + 1, gy, gz)) addFaceEast(vertices, fx, fy, fz, blockType)
+                    // A face is drawn unless its neighbour hides it. AIR and LEAVES are both
+                    // non-opaque, so faces against open air and against leaves are kept;
+                    // faces buried in stone are not. Asked in world coordinates, so the
+                    // neighbour of a Cell on a Chunk's border is read from the Chunk it
+                    // actually lives in.
+                    if (exposed(world, gx, gy + 1, gz)) addFaceTop(vertices, world, fx, fy, fz, gx, gy + 1, gz, blockType)
+                    if (exposed(world, gx, gy - 1, gz)) addFaceBottom(vertices, world, fx, fy, fz, gx, gy - 1, gz, blockType)
+                    if (exposed(world, gx, gy, gz - 1)) addFaceNorth(vertices, world, fx, fy, fz, gx, gy, gz - 1, blockType)
+                    if (exposed(world, gx, gy, gz + 1)) addFaceSouth(vertices, world, fx, fy, fz, gx, gy, gz + 1, blockType)
+                    if (exposed(world, gx - 1, gy, gz)) addFaceWest(vertices, world, fx, fy, fz, gx - 1, gy, gz, blockType)
+                    if (exposed(world, gx + 1, gy, gz)) addFaceEast(vertices, world, fx, fy, fz, gx + 1, gy, gz, blockType)
                 }
             }
         }
         return vertices.toFloatArray()
     }
-
 
     /**
      * True when the neighbour at this position does not hide the adjoining face.
@@ -583,6 +603,82 @@ object MeshGenerator {
     private fun exposed(n: Neighbourhood, x: Int, y: Int, z: Int): Boolean =
         n.blockAtOrNull(x, y, z)?.opaque != true
 
+    /** Whether this Cell would stand in a vertex's way. A Cell the world lacks does not. */
+    private fun occludes(n: Neighbourhood, cell: IntArray): Boolean =
+        n.blockAtOrNull(cell[0], cell[1], cell[2])?.opaque == true
+
+    /**
+     * Four corners' worth of shading for one face, into [into] as twelve floats.
+     *
+     * [base] is the Cell in front of the face, which is by definition not Opaque or the
+     * face would not have been drawn. [bAxis] and [cAxis] are the two axes the face lies
+     * in. Corners are ordered (-1,-1), (+1,-1), (+1,+1), (-1,+1) along those axes.
+     *
+     * The scratch arrays are reused across all four corners and allocated per face, because
+     * a face is 6 vertices and the arithmetic is not worth six temporary objects per
+     * corner.
+     */
+    private fun faceShading(
+        world: LitWorld, base: IntArray, bAxis: Int, cAxis: Int, into: FloatArray
+    ) {
+        val side1 = IntArray(3)
+        val side2 = IntArray(3)
+        val corner = IntArray(3)
+
+        for (index in 0 until 4) {
+            val ob = if (index == 0 || index == 3) -1 else 1
+            val oc = if (index < 2) -1 else 1
+
+            for (a in 0..2) {
+                side1[a] = base[a]; side2[a] = base[a]; corner[a] = base[a]
+            }
+            side1[bAxis] += ob
+            side2[cAxis] += oc
+            corner[bAxis] += ob
+            corner[cAxis] += oc
+
+            // --- Occlusion ---
+            // A corner touching two solid sides is hidden however open the diagonal is,
+            // which is why this tests both first rather than summing. Summing lets one
+            // open diagonal cancel a solid side and leaves a bright seam running down the
+            // corner of every wall in the world.
+            val s1 = if (occludes(world, side1)) 1 else 0
+            val s2 = if (occludes(world, side2)) 1 else 0
+            val co = if (occludes(world, corner)) 1 else 0
+            val shade = if (s1 == 1 && s2 == 1) 0 else 3 - (s1 + s2 + co)
+
+            // --- Light ---
+            // Averaged over the open Cells this corner touches on the near side, which is
+            // what makes brightness run smoothly out of a doorway instead of stepping once
+            // and then staying flat. Opaque Cells are skipped rather than counted as dark:
+            // a corner tucked against a wall should be as bright as the room it is in, not
+            // as dark as the wall.
+            var day = 0
+            var torch = 0
+            var open = 0
+
+            val inFront = world.lightAt(base[0], base[1], base[2])
+            day += Light.day(inFront); torch += Light.torch(inFront); open++
+
+            if (s1 == 0) {
+                val l = world.lightAt(side1[0], side1[1], side1[2])
+                day += Light.day(l); torch += Light.torch(l); open++
+            }
+            if (s2 == 0) {
+                val l = world.lightAt(side2[0], side2[1], side2[2])
+                day += Light.day(l); torch += Light.torch(l); open++
+            }
+            if (co == 0) {
+                val l = world.lightAt(corner[0], corner[1], corner[2])
+                day += Light.day(l); torch += Light.torch(l); open++
+            }
+
+            into[index * 3] = shade.toFloat()
+            into[index * 3 + 1] = day * LIGHT_SCALE / open
+            into[index * 3 + 2] = torch * LIGHT_SCALE / open
+        }
+    }
+
     private fun getUVs(bt: BlockType, face: Face): FloatArray {
         val tile = bt.tile(face)
         val uMin = tile.tx / ATLAS_SIZE
@@ -592,76 +688,98 @@ object MeshGenerator {
         return floatArrayOf(uMin, vMin, uMax, vMax)
     }
 
-    private fun addVertex(list: MutableList<Float>, x: Float, y: Float, z: Float, u: Float, v: Float, nx: Float, ny: Float, nz: Float) {
-        list.add(x); list.add(y); list.add(z) // Position (3 floats)
-        list.add(u); list.add(v)             // UV (2 floats)
-        list.add(nx); list.add(ny); list.add(nz) // Normals (3 floats)
+    /** Appends one vertex: position, UV, normal, light, shade. */
+    private fun addVertex(
+        list: MutableList<Float>, x: Float, y: Float, z: Float,
+        u: Float, v: Float, nx: Float, ny: Float, nz: Float,
+        s: FloatArray, corner: Int
+    ) {
+        list.add(x); list.add(y); list.add(z)        // Position (3 floats)
+        list.add(u); list.add(v)                     // UV (2 floats)
+        list.add(nx); list.add(ny); list.add(nz)      // Normal (3 floats)
+        list.add(s[corner + 1]); list.add(s[corner + 2])  // Daylight, Torchlight (2 floats)
+        list.add(s[corner])                         // Corner occlusion (1 float)
     }
 
-    private fun addFaceTop(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
+    private fun addFaceTop(v: MutableList<Float>, w: LitWorld, x: Float, y: Float, z: Float, nx: Int, ny: Int, nz: Int, bt: BlockType) {
+        val s = shadingFor(w, nx, ny, nz, AXIS_X, AXIS_Z)
         val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.TOP)
-        val nx = 0f; val ny = 1f; val nz = 0f // Facing Up
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMin, nx, ny, nz)
-        addVertex(v, x, y + 1f, z, uMin, vMin, nx, ny, nz)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, 0f, 1f, 0f, s, CORNER_01)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, 0f, 1f, 0f, s, CORNER_11)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMin, 0f, 1f, 0f, s, CORNER_10)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMin, 0f, 1f, 0f, s, CORNER_10)
+        addVertex(v, x, y + 1f, z, uMin, vMin, 0f, 1f, 0f, s, CORNER_00)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, 0f, 1f, 0f, s, CORNER_01)
     }
 
-    private fun addFaceBottom(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
+    private fun addFaceBottom(v: MutableList<Float>, w: LitWorld, x: Float, y: Float, z: Float, nx: Int, ny: Int, nz: Int, bt: BlockType) {
+        val s = shadingFor(w, nx, ny, nz, AXIS_X, AXIS_Z)
         val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.BOTTOM)
-        val nx = 0f; val ny = -1f; val nz = 0f // Facing Down
-        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y, z, uMax, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMax, nx, ny, nz)
-        addVertex(v, x, y, z + 1f, uMin, vMax, nx, ny, nz)
-        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
+        addVertex(v, x, y, z, uMin, vMin, 0f, -1f, 0f, s, CORNER_00)
+        addVertex(v, x + 1f, y, z, uMax, vMin, 0f, -1f, 0f, s, CORNER_10)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMax, 0f, -1f, 0f, s, CORNER_11)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMax, 0f, -1f, 0f, s, CORNER_11)
+        addVertex(v, x, y, z + 1f, uMin, vMax, 0f, -1f, 0f, s, CORNER_01)
+        addVertex(v, x, y, z, uMin, vMin, 0f, -1f, 0f, s, CORNER_00)
     }
 
-    private fun addFaceNorth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
+    private fun addFaceNorth(v: MutableList<Float>, w: LitWorld, x: Float, y: Float, z: Float, nx: Int, ny: Int, nz: Int, bt: BlockType) {
+        val s = shadingFor(w, nx, ny, nz, AXIS_X, AXIS_Y)
         val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.NORTH)
-        val nx = 0f; val ny = 0f; val nz = -1f // Facing North (-Z)
-        addVertex(v, x + 1f, y + 1f, z, uMin, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y, z, uMin, vMin, nx, ny, nz)
-        addVertex(v, x, y, z, uMax, vMin, nx, ny, nz)
-        addVertex(v, x, y, z, uMax, vMin, nx, ny, nz)
-        addVertex(v, x, y + 1f, z, uMax, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z, uMin, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z, uMin, vMax, 0f, 0f, -1f, s, CORNER_11)
+        addVertex(v, x + 1f, y, z, uMin, vMin, 0f, 0f, -1f, s, CORNER_10)
+        addVertex(v, x, y, z, uMax, vMin, 0f, 0f, -1f, s, CORNER_00)
+        addVertex(v, x, y, z, uMax, vMin, 0f, 0f, -1f, s, CORNER_00)
+        addVertex(v, x, y + 1f, z, uMax, vMax, 0f, 0f, -1f, s, CORNER_01)
+        addVertex(v, x + 1f, y + 1f, z, uMin, vMax, 0f, 0f, -1f, s, CORNER_11)
     }
 
-    private fun addFaceSouth(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
+    private fun addFaceSouth(v: MutableList<Float>, w: LitWorld, x: Float, y: Float, z: Float, nx: Int, ny: Int, nz: Int, bt: BlockType) {
+        val s = shadingFor(w, nx, ny, nz, AXIS_X, AXIS_Y)
         val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.SOUTH)
-        val nx = 0f; val ny = 0f; val nz = 1f // Facing South (+Z)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
-        addVertex(v, x, y, z + 1f, uMin, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y, z + 1f, uMax, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
-        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, 0f, 0f, 1f, s, CORNER_01)
+        addVertex(v, x, y, z + 1f, uMin, vMin, 0f, 0f, 1f, s, CORNER_00)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMin, 0f, 0f, 1f, s, CORNER_10)
+        addVertex(v, x + 1f, y, z + 1f, uMax, vMin, 0f, 0f, 1f, s, CORNER_10)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMax, vMax, 0f, 0f, 1f, s, CORNER_11)
+        addVertex(v, x, y + 1f, z + 1f, uMin, vMax, 0f, 0f, 1f, s, CORNER_01)
     }
 
-    private fun addFaceWest(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
+    private fun addFaceWest(v: MutableList<Float>, w: LitWorld, x: Float, y: Float, z: Float, nx: Int, ny: Int, nz: Int, bt: BlockType) {
+        val s = shadingFor(w, nx, ny, nz, AXIS_Z, AXIS_Y)
         val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.WEST)
-        val nx = -1f; val ny = 0f; val nz = 0f // Facing West (-X)
-        addVertex(v, x, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
-        addVertex(v, x, y + 1f, z, uMin, vMax, nx, ny, nz)
-        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
-        addVertex(v, x, y, z, uMin, vMin, nx, ny, nz)
-        addVertex(v, x, y, z + 1f, uMax, vMin, nx, ny, nz)
-        addVertex(v, x, y + 1f, z + 1f, uMax, vMax, nx, ny, nz)
+        addVertex(v, x, y + 1f, z + 1f, uMax, vMax, -1f, 0f, 0f, s, CORNER_11)
+        addVertex(v, x, y + 1f, z, uMin, vMax, -1f, 0f, 0f, s, CORNER_01)
+        addVertex(v, x, y, z, uMin, vMin, -1f, 0f, 0f, s, CORNER_00)
+        addVertex(v, x, y, z, uMin, vMin, -1f, 0f, 0f, s, CORNER_00)
+        addVertex(v, x, y, z + 1f, uMax, vMin, -1f, 0f, 0f, s, CORNER_10)
+        addVertex(v, x, y + 1f, z + 1f, uMax, vMax, -1f, 0f, 0f, s, CORNER_11)
     }
 
-    private fun addFaceEast(v: MutableList<Float>, x: Float, y: Float, z: Float, bt: BlockType) {
+    private fun addFaceEast(v: MutableList<Float>, w: LitWorld, x: Float, y: Float, z: Float, nx: Int, ny: Int, nz: Int, bt: BlockType) {
+        val s = shadingFor(w, nx, ny, nz, AXIS_Z, AXIS_Y)
         val (uMin, vMin, uMax, vMax) = getUVs(bt, Face.EAST)
-        val nx = 1f; val ny = 0f; val nz = 0f // Facing East (+X)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, nx, ny, nz)
-        addVertex(v, x + 1f, y, z + 1f, uMin, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y, z + 1f, uMin, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y, z, uMax, vMin, nx, ny, nz)
-        addVertex(v, x + 1f, y + 1f, z, uMax, vMax, nx, ny, nz)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMax, 1f, 0f, 0f, s, CORNER_01)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, 1f, 0f, 0f, s, CORNER_11)
+        addVertex(v, x + 1f, y, z + 1f, uMin, vMin, 1f, 0f, 0f, s, CORNER_10)
+        addVertex(v, x + 1f, y, z, uMax, vMin, 1f, 0f, 0f, s, CORNER_00)
+        addVertex(v, x + 1f, y + 1f, z, uMax, vMax, 1f, 0f, 0f, s, CORNER_01)
+        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, 1f, 0f, 0f, s, CORNER_11)
+    }
+
+    /**
+     * The shading block for one face, at the Cell in front of it.
+     *
+     * Twelve floats per face, and a fresh array each time, because a face's six vertices
+     * are appended to a list that is already the expensive part of meshing and reusing a
+     * shared buffer here would only save an allocation against that.
+     */
+    private fun shadingFor(
+        world: LitWorld, nx: Int, ny: Int, nz: Int, bAxis: Int, cAxis: Int
+    ): FloatArray {
+        val out = FloatArray(12)
+        faceShading(world, intArrayOf(nx, ny, nz), bAxis, cAxis, out)
+        return out
     }
 }
 

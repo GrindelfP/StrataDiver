@@ -82,15 +82,32 @@ class DroppedItem(pos: Vector3f, val type: BlockType) : Entity(pos, 0.15f, 0.3f)
     override fun tile() = type.primary
 }
 
-/** Draws every Entity from the one cube mesh they all share. */
+/**
+ * Draws every Entity from the one cube mesh they all share.
+ *
+ * [lightOf] reports the packed light of the Cell an Entity is sitting in, so a dropped
+ * item in a lit room is lit and one at the bottom of a dark tunnel is not. Passed in rather
+ * than reached for, because [Entity] knows nothing about the world beyond whether a Cell is
+ * Solid and this is the same arrangement as [SolidWorld]: the caller supplies the one fact
+ * that is needed and the callee stays ignorant of where it came from.
+ *
+ * The item cube is uploaded in the eight-float format, without per-vertex light, so its
+ * vertices carry none and the light arrives through the `lightLevel` uniform instead.
+ */
 object EntityRenderer {
 
-    fun draw(entities: List<Entity>, shader: ShaderProgram, cube: Mesh) {
+    fun draw(entities: List<Entity>, shader: ShaderProgram, cube: Mesh, lightOf: (Vector3f) -> Int) {
         shader.setInt("isEntity", 1)
         for (entity in entities) {
             val tile = entity.tile()
+            val packed = lightOf(entity.pos)
             shader.setMatrix("model", entity.modelMatrix())
             shader.setVec2("uvOffset", tile.tx.toFloat(), tile.ty.toFloat())
+            shader.setVec2(
+                "lightLevel",
+                Light.day(packed) / Light.MAX.toFloat(),
+                Light.torch(packed) / Light.MAX.toFloat()
+            )
             glBindVertexArray(cube.vao)
             glDrawArrays(GL_TRIANGLES, 0, 36)
         }
