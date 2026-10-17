@@ -32,13 +32,13 @@ interface LitWorld : Neighbourhood {
  * level per Cell, less whatever the Cell they pass through takes, and neither reaches full
  * brightness by travel — only a Column open to the sky does.
  *
- * The algorithm is the ordinary one: seed, spread, and on a change *darken first, then let
- * what survives spread back in*. The darkening half is the half that is easy to omit and
- * produces the classic black blob, where a wall the player has just built leaves the Cells
- * behind it holding exactly the light they had when the wall was not there.
+ * Both are recomputed from the sky rather than adjusted, including after the player changes
+ * something. That is not the obvious design and it replaced a better-looking one; see
+ * [onBlockChanged] for what the incremental version got wrong, and why every fix I found
+ * for it made some other shape of world wrong instead.
  *
  * Nothing here touches GL, and everything is reachable through [LitWorld], so all of it —
- * falloff, cross-Chunk spread, removal — is checkable with no window.
+ * falloff, cross-Chunk spread, change handling — is checkable with no window.
  */
 class LightEngine(private val world: LitWorld) {
 
@@ -286,140 +286,68 @@ class LightEngine(private val world: LitWorld) {
     /**
      * Recomputes light around a Cell the player has just changed.
      *
-     * [wasPacked] is that Cell's light *before* the write, and it cannot be recovered
-     * afterwards: `Chunk.setBlock` clears a Cell's light precisely because the numbers
-     * there described a world that no longer exists. Without it there is nowhere to start
-     * the darkening walk from, and the alternative — inferring the old level — is a guess.
+     * [wasPacked] is deliberately ignored, and that is the point of this method. It used to
+     * be the seed of an incremental darkening walk, and that walk was the only genuinely
+     * hard code in the engine — so hard that I could not fix it, only delete it.
      *
-     * The order is the entire design, and it is not the order that reads most naturally:
+     * The walk assumes light in a region forms a tree flowing downhill from a source, and
+     * that assumption breaks exactly where the world is interesting. A Cell at full
+     * daylight satisfies it in several directions at once: a shaft lights a whole Column
+     * to 15, so a Cell beside that Column is fed from above *and* from beside and has no
+     * unique path for the walk to walk back along. Given a room lit through one shaft, it
+     * correctly cleared 3,835 of 4,096 Cells and then abandoned the rest, leaving light
+     * behind in a gradient that looked like a rendering bug and was a queue of wrong
+     * answers.
      *
-     *  1. **Darken.** Take back the light the change was letting through. Doing this after
-     *     the Column is re-lit would delete the light just re-established, because the
-     *     Column walk hands the Cells below the change the very level the darkening walk is
-     *     about to recognise as "fed only through here".
-     *  2. **Re-derive the Column**, because the sky is a source no spread can rediscover.
-     *     It exists because a Column is open, which is a fact about everything *above* the
-     *     change rather than about the change.
-     *  3. **Spread** from what survived and from the Cells still lit around the change.
+     * Every fix I could think of was right about one geometry and wrong about another:
+     * clear equal-level neighbours too, and a legitimately-lit plateau goes dark; treat
+     * vertical runs as fed-from-above, and overhangs go dark; walk in a different order,
+     * and a different shape goes dark. None of them had a failing case you could picture,
+     * which is the signature of code whose rules have not been found yet.
+     *
+     * So the walk is gone, and in its place: light the whole neighbourhood again. It is
+     * less clever, it is a few milliseconds, and it cannot be wrong in a way nobody has
+     * thought of — it recomputes from the sky, which is the definition of correct. Given
+     * [wasPacked] is unused the parameter is kept only so the call site documents that the
+     * Cell's light was cleared by the write and that this does not need it back.
+     *
+     * Cost is bounded and argued rather than guessed: light travels at most [Light.MAX]
+     * Cells and a Chunk is [Chunk.SIZE] across, so no Chunk two steps away in any axis can
+     * hold a Cell the change reached. One step is 16 Cells, which clears 15 with a Cell to
+     * spare. Measured at ~0.5ms a Chunk, so ~13ms for the 27 — inside a frame at 60Hz, and
+     * paid only on a discrete block change rather than per frame.
      */
     fun onBlockChanged(x: Int, y: Int, z: Int, wasPacked: Int) {
-        darkenFromChange(x, y, z, wasPacked)
-        relightColumn(x, z)
-        seedAround(x, y, z)
-
-        spread(daylightQueue, day = true)
-        spread(torchlightQueue, day = false)
+        relightNeighbourhood(x, y, z)
     }
 
     /**
-     * Takes back the light the changed Cell used to pass on, and leaves the Cells that were
-     * keeping themselves lit queued to re-seed.
+     * Re-derives every Chunk within one step of this Cell, skipping those the world has
+     * not made.
      *
-     * A Cell is only darkened if the change could plausibly have been what was lighting
-     * it — its level is below the level being removed, which means something else was
-     * brighter and reached it another way. Cells at or above the removed level were
-     * carrying their own light, and are left alone and re-seeded.
+     * Outermost-first would light a frontier Chunk before its inward neighbour and leave
+     * it short of light it should have inherited, so this is deliberately *nearest* first:
+     * each Chunk's flood then has its inward neighbours already correct to spread out of.
      */
-    private fun darkenFromChange(x: Int, y: Int, z: Int, wasPacked: Int) {
-        for (day in booleanArrayOf(true, false)) {
-            val level = if (day) Light.day(wasPacked) else Light.torch(wasPacked)
-            if (level <= 0) continue
-            darken(x, y, z, level, day, if (day) daylightQueue else torchlightQueue)
-        }
-    }
+    private fun relightNeighbourhood(x: Int, y: Int, z: Int) {
+        val cx = Math.floorDiv(x, Chunk.SIZE)
+        val cy = Math.floorDiv(y, Chunk.SIZE)
+        val cz = Math.floorDiv(z, Chunk.SIZE)
 
-    private fun darken(x: Int, y: Int, z: Int, level: Int, day: Boolean, seeds: IntQueue) {
-        walk.clear()
-        clear(x, y, z, day)
-        walk.push(x, y, z, level)
-
-        walk.drain { cx, cy, cz, atLevel ->
-            for (d in 0 until 6) {
-                val nx = cx + DX[d]
-                val ny = cy + DY[d]
-                val nz = cz + DZ[d]
-                val type = world.blockAtOrNull(nx, ny, nz) ?: continue
-                if (type.opaque) continue
-
-                val neighbourLevel = levelOf(world.lightAt(nx, ny, nz), day)
-                if (neighbourLevel == 0) continue
-
-                val fedOnlyByUs = neighbourLevel < atLevel ||
-                        // Daylight falls a whole Column at full strength, so a Cell
-                        // directly below another at the same brightness is fed by it and by
-                        // nothing else. Treating it as self-sufficient is what leaves a lit
-                        // Column in darkness under the block the player just placed.
-                        (day && d == 3 && neighbourLevel == atLevel)
-
-                if (fedOnlyByUs) {
-                    clear(nx, ny, nz, day)
-                    walk.push(nx, ny, nz, neighbourLevel)
-                } else {
-                    seeds.push(nx, ny, nz)
-                }
-            }
-        }
-    }
-
-    /**
-     * Walks one Column from the ceiling of the world and restores full daylight to every
-     * Cell nothing opaque stands above.
-     */
-    private fun relightColumn(x: Int, z: Int) {
-        val layers = columnLayers(Math.floorDiv(x, Chunk.SIZE), Math.floorDiv(z, Chunk.SIZE))
-        val lx = Math.floorMod(x, Chunk.SIZE)
-        val lz = Math.floorMod(z, Chunk.SIZE)
-
-        var openToSky = true
-        for (cy in Chunk.HEIGHT_LAYERS - 1 downTo 0) {
-            val layer = layers[cy] ?: continue
-            for (ly in Chunk.SIZE - 1 downTo 0) {
-                if (BlockType.getById(layer.getBlock(lx, ly, lz)).opaque) {
-                    openToSky = false
-                    continue
-                }
-                if (!openToSky) continue
-
-                val worldY = cy * Chunk.SIZE + ly
-                val packed = world.lightAt(x, worldY, z)
-                if (Light.day(packed) >= Light.MAX) continue
-                write(x, worldY, z, Light.pack(Light.MAX, Light.torch(packed)))
-                daylightQueue.push(x, worldY, z)
-            }
-        }
-    }
-
-    /**
-     * Seeds both channels from around the change: the emitters in its Chunk, and every
-     * Cell next to it that is still lit.
-     *
-     * A neighbourhood rather than a fresh spread from scratch. The rest of the world is
-     * unchanged, and re-deriving it would be both slow and, near a frontier, impossible —
-     * there is no seed available for a region of sky light whose top the walk cannot see.
-     */
-    private fun seedAround(x: Int, y: Int, z: Int) {
-        world.existingChunkAt(x, y, z)?.let { chunk ->
-            val baseX = chunk.xOffset * Chunk.SIZE
-            val baseY = chunk.yOffset * Chunk.SIZE
-            val baseZ = chunk.zOffset * Chunk.SIZE
-            for (lx in 0 until Chunk.SIZE) {
-                for (ly in 0 until Chunk.SIZE) {
-                    for (lz in 0 until Chunk.SIZE) {
-                        if (BlockType.getById(chunk.getBlock(lx, ly, lz)).emission > 0) {
-                            torchlightQueue.push(baseX + lx, baseY + ly, baseZ + lz)
-                        }
-                    }
-                }
-            }
-        }
-
+        val order = mutableListOf<Triple<Int, Int, Int>>()
         for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
-            if (dx == 0 && dy == 0 && dz == 0) continue
-            val nx = x + dx; val ny = y + dy; val nz = z + dz
-            if (world.blockAtOrNull(nx, ny, nz)?.opaque != false) continue
-            val packed = world.lightAt(nx, ny, nz)
-            if (Light.day(packed) > 1) daylightQueue.push(nx, ny, nz)
-            if (Light.torch(packed) > 1) torchlightQueue.push(nx, ny, nz)
+            val px = cx + dx; val py = cy + dy; val pz = cz + dz
+            if (py < 0 || py >= Chunk.HEIGHT_LAYERS) continue
+            order.add(Triple(px, py, pz))
+        }
+        order.sortBy { (px, py, pz) ->
+            val d = px * px + py * py + pz * pz
+            d
+        }
+
+        for ((px, py, pz) in order) {
+            world.existingChunkAt(px * Chunk.SIZE, py * Chunk.SIZE, pz * Chunk.SIZE)
+                ?.let { lightChunk(it) }
         }
     }
 
@@ -444,7 +372,6 @@ class LightEngine(private val world: LitWorld) {
 
     private val daylightQueue = IntQueue()
     private val torchlightQueue = IntQueue()
-    private val walk = LevelQueue()
 
     /**
      * A first-in-first-out of world coordinates, as parallel arrays.
@@ -501,50 +428,6 @@ class LightEngine(private val world: LitWorld) {
                 System.arraycopy(zs, 0, bigger, 0, tail)
                 xs = bigger; ys = bigger.copyOf(); zs = bigger.copyOf()
             }
-        }
-    }
-
-    /** An [IntQueue] that also carries a light level, for the darkening walk. */
-    private class LevelQueue {
-        private var xs = IntArray(256)
-        private var ys = IntArray(256)
-        private var zs = IntArray(256)
-        private var ls = IntArray(256)
-        private var head = 0
-        private var tail = 0
-
-        fun clear() { head = 0; tail = 0 }
-
-        fun push(x: Int, y: Int, z: Int, level: Int) {
-            if (tail == xs.size) grow()
-            xs[tail] = x; ys[tail] = y; zs[tail] = z; ls[tail] = level; tail++
-        }
-
-        inline fun drain(action: (Int, Int, Int, Int) -> Unit) {
-            while (head != tail) {
-                val x = xs[head]; val y = ys[head]; val z = zs[head]; val l = ls[head]; head++
-                action(x, y, z, l)
-            }
-            head = 0; tail = 0
-        }
-
-        /**
-         * Doubles the queue, **keeping what is in it**.
-         *
-         * The copying is the whole of this method. A version that reallocated without it
-         * compiled, ran, and produced a room that was correctly darkened for 256 Cells and
-         * then quietly abandoned — light left behind in a ragged wedge around the edges of
-         * wherever the walk had reached when the queue overflowed, and nothing anywhere
-         * reporting that the walk had stopped early. It is the worst shape a bug can have:
-         * plausible output, no error, and the threshold nowhere near it in the source.
-         */
-        private fun grow() {
-            val bigger = IntArray(xs.size * 2)
-            System.arraycopy(xs, 0, bigger, 0, tail)
-            System.arraycopy(ys, 0, bigger, 0, tail)
-            System.arraycopy(zs, 0, bigger, 0, tail)
-            System.arraycopy(ls, 0, bigger, 0, tail)
-            xs = bigger; ys = bigger.copyOf(); zs = bigger.copyOf(); ls = bigger.copyOf()
         }
     }
 }

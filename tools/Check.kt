@@ -834,18 +834,22 @@ fun main() {
         f.sealedRoom(shaft = true)
         f.lightEverything()
 
-        fun wrong() = f.countWrong(::daylightUnderShaft)
-        check("the room starts matching the shaft's falloff", wrong() == 0) { "${wrong()} Cells differ" }
+        fun litWrong() = f.countWrong(::daylightUnderShaft)
+        fun darkWrong() = f.countWrong { _, _, _ -> Light.DARK }
+        check("the room starts matching the shaft's falloff", litWrong() == 0) { "${litWrong()} Cells differ" }
 
         f.change(8, 20, 8, BlockType.STONE)      // roof the shaft over
         check("roofing the shaft puts the room back in darkness", f.day(8, 15, 8) == 0) {
             "got ${f.day(8, 15, 8)} — light left behind after the hole was closed"
         }
-        check("all of it, not just the Cell underneath", wrong() == 0) { "${wrong()} Cells still lit" }
+        // Compared against *dark*, not against the falloff. The whole 16x16x16 room has to
+        // go out: the light in it came through the one hole, and the hole is closed.
+        check("all of it, not just the Cell underneath", darkWrong() == 0) { "${darkWrong()} Cells still lit" }
         check("and nothing above the new block changed", f.day(8, 21, 8) == Light.MAX)
+        check("nor anything below it", f.day(8, 19, 8) == Light.DARK)
 
         f.change(8, 20, 8, BlockType.AIR)        // open it again
-        check("reopening it restores every Cell exactly", wrong() == 0) { "${wrong()} Cells differ" }
+        check("reopening it restores every Cell exactly", litWrong() == 0) { "${litWrong()} Cells differ" }
         check("and the shaft itself is full daylight again", f.day(8, 0, 8) == Light.MAX)
     }
 
@@ -894,6 +898,70 @@ fun main() {
         println("  ${targets.size} edits, each applied and reverted over an 80x96x80 region")
         check("every build and unbuild returns the light to exactly where it was",
             mismatches == 0) { "$mismatches of ${targets.size} left a difference; first $firstMismatch" }
+    }
+
+    println("\n== Light: an edit must equal recomputing the neighbourhood from scratch ==")
+    // The invariant that replaced the incremental darkening walk. Whatever a block change
+    // does, the result has to be indistinguishable from throwing the affected Chunks away
+    // and deriving them from the sky again — because that is what the change now does, and
+    // this is the check that would notice if anyone put clever incremental logic back.
+    //
+    // It is also the check that would have caught the walk, several checks earlier and with
+    // a much clearer message than "261 Cells still lit".
+    run {
+        val streamer = litTerrain(cx = -2, cz = -2, side = 4, cy0 = 5, layers = 7)
+        val side = 4
+        val baseY = 5
+        val layers = 7
+
+        fun allChunks() = (0 until side).flatMap { cx ->
+            (0 until side).flatMap { cz ->
+                (0 until layers).map { cy ->
+                    streamer.existingChunkAt((cx - 2) * 16, (baseY + cy) * 16, (cz - 2) * 16)
+                }
+            }
+        }.filterNotNull()
+
+        fun snapshot() = (-24..39).flatMap { x ->
+            (0..111).flatMap { y -> (-24..39).map { z -> streamer.lightAt(x, y, z) } }
+        }.toIntArray()
+
+        val edits = listOf(
+            Triple(8, 41, 8), Triple(9, 41, 8), Triple(8, 40, 9), Triple(12, 60, 3),
+            Triple(3, 63, 12), Triple(-5, 71, -5), Triple(30, 57, 30), Triple(-20, 63, 18),
+            Triple(0, 96, 0), Triple(40, 100, -40), Triple(-16, 48, 16), Triple(16, 80, -16)
+        )
+
+        var diverged = 0
+        var firstDivergence = "none"
+        for ((x, y, z) in edits) {
+            val opposite = if (streamer.blockAt(x, y, z) == BlockType.AIR) BlockType.STONE else BlockType.AIR
+            streamer.setBlockData(x, y, z, opposite)
+            val incremental = snapshot()
+            allChunks().forEach { streamer.light.lightChunk(it) }
+            val fromScratch = snapshot()
+            if (!incremental.contentEquals(fromScratch)) {
+                diverged++
+                if (firstDivergence == "none") {
+                    val i = incremental.indices.first { incremental[it] != fromScratch[it] }
+                    val n = 64
+                    firstDivergence = "at (${-24 + i % n}, ${i / (n * n)}, " +
+                            "${-24 + (i / n) % n}) got day ${Light.day(incremental[i])} " +
+                            "expected ${Light.day(fromScratch[i])}"
+                }
+            }
+        }
+        check("an edit lands on exactly what a full re-derivation would produce",
+            diverged == 0) { "$diverged of ${edits.size} diverged; first $firstDivergence" }
+
+        // And the cost, measured rather than asserted, so the number in the session log is
+        // not a guess.
+        val t0 = System.nanoTime()
+        repeat(20) { streamer.setBlockData(8 + it, 41, 8, BlockType.STONE) }
+        val perEdit = (System.nanoTime() - t0) / 20 / 1_000_000.0
+        println("  a block change re-lights its neighbourhood in %.1f ms".format(perEdit))
+        check("and it is affordable for a discrete player action", perEdit < 33.0,
+            "%.1f ms is past two frames".format(perEdit))
     }
 
     println("\n== Light: real terrain is lit like terrain should be ==")
