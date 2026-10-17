@@ -16,19 +16,96 @@ fun check(name: String, condition: Boolean, detail: String = "") {
 
 fun main() {
     println("\n== Meshing: the numbers the session log recorded before the split ==")
+    // The mesher needs a Neighbourhood, and the honest one is the world itself. Two are
+    // in play deliberately:
+    //
+    //   IN_WORLD   — every Chunk in the sample created first, so border faces are culled
+    //                against the Chunk actually next door.
+    //   CHUNK_ONLY — reads the Chunk's own Cells and says AIR outside them, which is
+    //                exactly what `Chunk.getBlock` did when the mesher asked it about the
+    //                next door. This is the old behaviour, reproduced rather than
+    //                remembered, so the pre-fix figure stays checkable.
+    //
+    // Comparing them is the assertion. The absolute counts are regression guards; the
+    // difference between the two is the bug.
+    val sample = mutableListOf<Triple<Int, Int, Int>>()
+    for (cx in 0 until 4) for (cz in 0 until 4) for (cy in 0 until 16) sample.add(Triple(cx, cy, cz))
+    val sampleChunks = sample.map { (cx, cy, cz) -> Chunk(cx, cy, cz) }
+
+    val inWorld = object : Neighbourhood {
+        val byPosition = sampleChunks.associateBy { it.position }
+        override fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType? {
+            val cx = Math.floorDiv(x, 16); val cy = Math.floorDiv(y, 16); val cz = Math.floorDiv(z, 16)
+            val chunk = byPosition[Triple(cx, cy, cz)] ?: return null
+            return BlockType.getById(
+                chunk.getBlock(Math.floorMod(x, 16), Math.floorMod(y, 16), Math.floorMod(z, 16))
+            )
+        }
+    }
+
+    /** The old mesher's whole model of its neighbours: this Chunk, and AIR past its edge. */
+    fun chunkOnlyNeighbourhood(chunk: Chunk) = object : Neighbourhood {
+        override fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType = BlockType.getById(
+            chunk.getBlock(x - chunk.xOffset * 16, y - chunk.yOffset * 16, z - chunk.zOffset * 16)
+        )
+    }
+
+    val chunkOnly = chunkOnlyNeighbourhood(sampleChunks.first())
+
     var total = 0
     var allAir = 0
-    var chunks = 0
-    for (cx in 0 until 4) for (cz in 0 until 4) for (cy in 0 until 16) {
-        val chunk = Chunk(cx, cy, cz)
-        val vertices = MeshGenerator.generateChunkMesh(chunk).size / Geometry.POS_UV_NORMAL
+    var chunkOnlyTotal = 0
+    var chunkOnlyNonEmpty = 0
+    var chunksGained = 0
+    for (chunk in sampleChunks) {
+        val vertices = MeshGenerator.generateChunkMesh(chunk, inWorld).size / Geometry.POS_UV_NORMAL
+        val naive = MeshGenerator.generateChunkMesh(chunk, chunkOnlyNeighbourhood(chunk))
+            .size / Geometry.POS_UV_NORMAL
         total += vertices
-        chunks++
+        chunkOnlyTotal += naive
         if (vertices == 0) allAir++
+        if (naive > 0) chunkOnlyNonEmpty++
+        if (naive > vertices) chunksGained++
     }
-    println("  4x4x16 sample: $total vertices, $allAir/$chunks chunks all-air")
-    check("vertex count matches the pre-refactor figure", total == 1_213_368, "was $total, expected 1213368")
-    check("all-air count matches the pre-refactor figure", allAir == 117, "was $allAir, expected 117")
+    println("  4x4x16 sample: $total vertices in-world, $chunkOnlyTotal chunk-only, " +
+            "$allAir/${sampleChunks.size} chunks all-air")
+
+    // The figure the session log recorded, reproduced through the old neighbour model. If
+    // this moves, the refactor changed what the mesher does when nothing is next door —
+    // which is the one thing it was supposed to stop doing.
+    check("chunk-only culling still reproduces the pre-fix figure",
+        chunkOnlyTotal == 1_213_368, "was $chunkOnlyTotal, expected 1213368")
+    check("in-world total is stable run to run", run {
+        val again = sampleChunks.sumOf {
+            MeshGenerator.generateChunkMesh(it, inWorld).size / Geometry.POS_UV_NORMAL
+        }
+        again == total
+    }, "re-ran to a different number")
+    check("border culling removes geometry", total < chunkOnlyTotal,
+        "in-world $total, chunk-only $chunkOnlyTotal")
+    // Every Chunk that drew anything under the old model now draws strictly less. Not a
+    // sample: all of them. A partially-fixed culler leaves a few Chunks still paying for
+    // a shell nobody can see, and it is exactly those that never show up in a screenshot.
+    check("every Chunk that drew anything now draws less", chunksGained == chunkOnlyNonEmpty,
+        "$chunksGained of $chunkOnlyNonEmpty non-empty Chunks gained anything")
+    check("more Chunks are left with nothing to draw", allAir > 117,
+        "was 117 before the fix, now $allAir")
+
+    // The seam itself: a solid block against the next Chunk over must lose the face that
+    // used to be drawn inside it. A Chunk above the terrain is all air, so one Cell
+    // written into it is the entire world of the test — the smallest world in which the
+    // old code was wrong, and the only one where the face count is readable.
+    val seam = Chunk(0, 15, 0)
+    seam.setBlock(0, 0, 0, BlockType.STONE)
+    val seamWorld = object : Neighbourhood {
+        override fun blockAtOrNull(x: Int, y: Int, z: Int) =
+            if (x == 1 && y == 240 && z == 0) BlockType.STONE else BlockType.AIR
+    }
+    fun facesOf(n: Neighbourhood) =
+        MeshGenerator.generateChunkMesh(seam, n).size / Geometry.POS_UV_NORMAL / 6
+    check("a lone Cell draws 6 faces", facesOf(chunkOnly) == 6, "got ${facesOf(chunkOnly)}")
+    check("a Cell with solid next door draws 5, not 6", facesOf(seamWorld) == 5,
+        "got ${facesOf(seamWorld)}")
 
     println("\n== Generation is reproducible ==")
     fun cells(x: Int, y: Int, z: Int) = Chunk(x, y, z).let { c ->

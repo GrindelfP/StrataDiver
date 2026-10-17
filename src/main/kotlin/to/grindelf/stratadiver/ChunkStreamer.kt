@@ -15,6 +15,26 @@ interface SolidWorld {
 }
 
 /**
+ * What is in the Cell next door, when the next door is in a different Chunk.
+ *
+ * A [Chunk] can only answer for its own 16×16×16, and `Chunk.getBlock` answers AIR
+ * outside those bounds — which is a lie the mesher used to believe. Every face on a
+ * Chunk's border therefore looked exposed no matter what was actually against it, so the
+ * mesher drew faces buried inside the neighbouring solid. Reading across the boundary is
+ * what makes border culling possible at all.
+ *
+ * **Null is not air.** It means the world has not produced that Cell. The mesher treats it
+ * as "not Opaque" and draws the face, because the frontier has to be visible; Light treats
+ * it as Unknown and refuses to propagate across it. Both readings are correct and they are
+ * opposite, which is exactly why they are two explicitly named methods rather than one
+ * method with a flag.
+ */
+interface Neighbourhood {
+    /** The Block Type in this Cell, or null where no Chunk covers it. */
+    fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType?
+}
+
+/**
  * Decides which Chunks exist, which of them hold GPU memory, and what is in them.
  *
  * Two lifetimes are deliberately kept apart. [chunks] is the world's Cells, created on
@@ -27,7 +47,7 @@ class ChunkStreamer(
     private val renderDistance: Int = 4,
     private val verticalRenderDistance: Int = 3,
     private val maxMeshesPerFrame: Int = 8
-) : SolidWorld {
+) : SolidWorld, Neighbourhood {
 
     private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
 
@@ -54,12 +74,40 @@ class ChunkStreamer(
         return chunks.getOrPut(Triple(cx, cy, cz)) { Chunk(cx, cy, cz) }
     }
 
+    /**
+     * The Chunk containing this Cell **only if it already exists**. Never generates.
+     *
+     * The difference from [chunkAt] is the whole point, and the two are deliberately
+     * separate methods rather than one with a flag. Anything that floods outward — light
+     * propagation, border culling — must not bring the world into existence as a side
+     * effect of looking at it: a flood that generated a neighbour mid-walk would be
+     * reading a Chunk whose own light has not been computed, and meshing it there and
+     * then would upload a Chunk lit from nothing.
+     */
+    fun existingChunkAt(x: Int, y: Int, z: Int): Chunk? {
+        val cy = Math.floorDiv(y, Chunk.SIZE)
+        if (cy < 0 || cy >= Chunk.HEIGHT_LAYERS) return null
+        return chunks[Triple(Math.floorDiv(x, Chunk.SIZE), cy, Math.floorDiv(z, Chunk.SIZE))]
+    }
+
     override fun isSolid(x: Float, y: Float, z: Float): Boolean =
         blockAt(floor(x).toInt(), floor(y).toInt(), floor(z).toInt()) != BlockType.AIR
 
-    /** The Block Type in this Cell, or AIR outside the world. */
+    /** The Block Type in this Cell, or AIR outside the world. Generates on demand. */
     fun blockAt(x: Int, y: Int, z: Int): BlockType {
         val chunk = chunkAt(x, y, z) ?: return BlockType.AIR
+        return BlockType.getById(
+            chunk.getBlock(Math.floorMod(x, Chunk.SIZE), Math.floorMod(y, Chunk.SIZE), Math.floorMod(z, Chunk.SIZE))
+        )
+    }
+
+    /**
+     * The Block Type in this Cell, or null where no Chunk covers it.
+     *
+     * Not the same answer as [blockAt], which says AIR. See [Neighbourhood].
+     */
+    override fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType? {
+        val chunk = existingChunkAt(x, y, z) ?: return null
         return BlockType.getById(
             chunk.getBlock(Math.floorMod(x, Chunk.SIZE), Math.floorMod(y, Chunk.SIZE), Math.floorMod(z, Chunk.SIZE))
         )
@@ -144,7 +192,7 @@ class ChunkStreamer(
         chunk.releaseMesh()
 
         chunk.mesh = Geometry.upload(
-            MeshGenerator.generateChunkMesh(chunk),
+            MeshGenerator.generateChunkMesh(chunk, this),
             Geometry.POS_UV_NORMAL
         )
 

@@ -375,7 +375,17 @@ object MeshGenerator {
 
     private const val ATLAS_SIZE = 4.0f // 4x4 tiles in our generated texture
 
-    fun generateChunkMesh(chunk: Chunk): FloatArray {
+    /**
+     * The triangles of [chunk], culling every face whose neighbour hides it.
+     *
+     * [neighbourhood] is required rather than optional because a Chunk cannot answer the
+     * only question that matters at its own border. `Chunk.getBlock` returns AIR outside
+     * its own 16×16×16, so asking it about the next Chunk's Cells answered "exposed" for
+     * every boundary face in the world and the mesher drew faces that were buried inside
+     * solid rock. That is wasted geometry today, and it is also the reason light and
+     * corner shading had nowhere to read from.
+     */
+    fun generateChunkMesh(chunk: Chunk, neighbourhood: Neighbourhood): FloatArray {
         val vertices = mutableListOf<Float>()
         val size = Chunk.SIZE
 
@@ -386,20 +396,26 @@ object MeshGenerator {
                     if (blockId == BlockType.AIR.id) continue
 
                     val blockType = BlockType.getById(blockId)
-                    val gx = (chunk.xOffset * size + x).toFloat()
-                    val gy = (chunk.yOffset * size + y).toFloat()
-                    val gz = (chunk.zOffset * size + z).toFloat()
+                    val gx = (chunk.xOffset * size + x).toInt()
+                    val gy = (chunk.yOffset * size + y).toInt()
+                    val gz = (chunk.zOffset * size + z).toInt()
+                    val fx = gx.toFloat()
+                    val fy = gy.toFloat()
+                    val fz = gz.toFloat()
 
                     // --- FACE CULLING ---
                     // A face is drawn unless its neighbour hides it. AIR and
                     // LEAVES are both non-opaque, so faces against open air and
                     // against leaves are kept; faces buried in stone are not.
-                    if (exposed(chunk, x, y + 1, z)) addFaceTop(vertices, gx, gy, gz, blockType)
-                    if (exposed(chunk, x, y - 1, z)) addFaceBottom(vertices, gx, gy, gz, blockType)
-                    if (exposed(chunk, x, y, z - 1)) addFaceNorth(vertices, gx, gy, gz, blockType)
-                    if (exposed(chunk, x, y, z + 1)) addFaceSouth(vertices, gx, gy, gz, blockType)
-                    if (exposed(chunk, x - 1, y, z)) addFaceWest(vertices, gx, gy, gz, blockType)
-                    if (exposed(chunk, x + 1, y, z)) addFaceEast(vertices, gx, gy, gz, blockType)
+                    //
+                    // Asked in world coordinates, so the neighbour of a Cell on a
+                    // Chunk's border is read from the Chunk it actually lives in.
+                    if (exposed(neighbourhood, gx, gy + 1, gz)) addFaceTop(vertices, fx, fy, fz, blockType)
+                    if (exposed(neighbourhood, gx, gy - 1, gz)) addFaceBottom(vertices, fx, fy, fz, blockType)
+                    if (exposed(neighbourhood, gx, gy, gz - 1)) addFaceNorth(vertices, fx, fy, fz, blockType)
+                    if (exposed(neighbourhood, gx, gy, gz + 1)) addFaceSouth(vertices, fx, fy, fz, blockType)
+                    if (exposed(neighbourhood, gx - 1, gy, gz)) addFaceWest(vertices, fx, fy, fz, blockType)
+                    if (exposed(neighbourhood, gx + 1, gy, gz)) addFaceEast(vertices, fx, fy, fz, blockType)
                 }
             }
         }
@@ -407,11 +423,15 @@ object MeshGenerator {
     }
 
 
-    /** True when the neighbour at this position does not hide the adjoining face. */
-    private fun exposed(chunk: Chunk, x: Int, y: Int, z: Int): Boolean {
-        val neighbour = BlockType.getById(chunk.getBlock(x, y, z))
-        return !neighbour.opaque
-    }
+    /**
+     * True when the neighbour at this position does not hide the adjoining face.
+     *
+     * A neighbour the world has not produced counts as exposed, so the frontier is drawn
+     * rather than the player looking at a hole in the world. See [Neighbourhood] for why
+     * that is the opposite of what Light wants from the same question.
+     */
+    private fun exposed(n: Neighbourhood, x: Int, y: Int, z: Int): Boolean =
+        n.blockAtOrNull(x, y, z)?.opaque != true
 
     private fun getUVs(bt: BlockType, face: Face): FloatArray {
         val tile = bt.tile(face)
