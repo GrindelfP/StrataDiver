@@ -14,6 +14,19 @@ fun check(name: String, condition: Boolean, detail: String = "") {
     if (condition) println("  ok   $name") else { failures++; println("  FAIL $name  $detail") }
 }
 
+/**
+ * [check] with a detail that is only built when the check fails.
+ *
+ * The String overload evaluates its detail on every run, which has two costs. It spends
+ * time on checks that passed — one of them filters the whole Block Type enum — and, worse,
+ * the detail is built *outside* any `run { }` wrapping the condition, so it cannot see a
+ * local the condition just computed. That produces `unresolved reference` rather than a
+ * wrong answer, which is at least loud, but it has caught this file twice now.
+ */
+fun check(name: String, condition: Boolean, detail: () -> String) {
+    if (condition) println("  ok   $name") else { failures++; println("  FAIL $name  ${detail()}") }
+}
+
 fun main() {
     println("\n== Meshing: the numbers the session log recorded before the split ==")
     // The mesher needs a Neighbourhood, and the honest one is the world itself. Two are
@@ -521,6 +534,409 @@ fun main() {
         val h = headed.heading(looker2.front)
         kotlin.math.abs(h.x - looker2.front.x) < 1e-5f && kotlin.math.abs(h.y - looker2.front.z) < 1e-5f
     })
+
+    // ==================================================================================
+    // The light engine.
+    //
+    // Driven against a world of exactly the Chunks a test asks for, all air. Everything
+    // here is arithmetic over Cell contents, so all of it is reachable without a window —
+    // which is the point. Light has more ways to be subtly wrong than anything else in
+    // this codebase, and nearly every one of them produces a plausible picture rather
+    // than an error: a sealed room that stays lit after you wall it off renders
+    // perfectly. Only the numbers say it is wrong, and no amount of looking at a
+    // screenshot will ever say it.
+    // ==================================================================================
+
+    /** A [LitWorld] with no terrain and no GL: only the Chunks a test asks for, all air. */
+    class FlatWorld : LitWorld {
+        private val chunks = LinkedHashMap<Triple<Int, Int, Int>, Chunk>()
+
+        fun create(cx: Int, cy: Int, cz: Int): Chunk = chunks.getOrPut(Triple(cx, cy, cz)) {
+            Chunk(cx, cy, cz).also { c ->
+                for (x in 0 until 16) for (y in 0 until 16) for (z in 0 until 16) {
+                    c.setBlock(x, y, z, BlockType.AIR)
+                }
+            }
+        }
+
+        /** Creates a block of Chunks: 2*rx+1 across, [ry] tall, 2*rz+1 deep. */
+        fun createAll(rx: Int = 1, ry: Int = 3, rz: Int = 1) {
+            for (cx in -rx..rx) for (cy in 0 until ry) for (cz in -rz..rz) create(cx, cy, cz)
+        }
+
+        fun all() = chunks.values.toList()
+
+        /** Writes a Cell, in world coordinates, creating whatever Chunk holds it. */
+        fun set(x: Int, y: Int, z: Int, type: BlockType) {
+            create(Math.floorDiv(x, 16), Math.floorDiv(y, 16), Math.floorDiv(z, 16))
+                .setBlock(Math.floorMod(x, 16), Math.floorMod(y, 16), Math.floorMod(z, 16), type)
+        }
+
+        /** Writes an inclusive box of Cells, in world coordinates. */
+        fun fill(x0: Int, y0: Int, z0: Int, x1: Int, y1: Int, z1: Int, type: BlockType) {
+            for (x in x0..x1) for (y in y0..y1) for (z in z0..z1) set(x, y, z, type)
+        }
+
+        private fun chunkAt(x: Int, y: Int, z: Int) =
+            chunks[Triple(Math.floorDiv(x, 16), Math.floorDiv(y, 16), Math.floorDiv(z, 16))]
+
+        private fun lx(x: Int) = Math.floorMod(x, 16)
+        private fun ly(y: Int) = Math.floorMod(y, 16)
+        private fun lz(z: Int) = Math.floorMod(z, 16)
+
+        override fun existingChunkAt(x: Int, y: Int, z: Int) = chunkAt(x, y, z)
+
+        override fun blockAtOrNull(x: Int, y: Int, z: Int): BlockType? =
+            chunkAt(x, y, z)?.let { BlockType.getById(it.getBlock(lx(x), ly(y), lz(z))) }
+
+        override fun lightAt(x: Int, y: Int, z: Int): Int =
+            chunkAt(x, y, z)?.packedLightAt(lx(x), ly(y), lz(z)) ?: Light.DARK
+
+        override fun setLight(x: Int, y: Int, z: Int, packed: Int): Chunk? =
+            chunkAt(x, y, z)?.also { it.setPackedLight(lx(x), ly(y), lz(z), packed) }
+    }
+
+    /** A world plus its engine, with the write path `ChunkStreamer` uses. */
+    class LitFixture(rx: Int = 1, ry: Int = 3, rz: Int = 1) {
+        val world = FlatWorld()
+        val engine = LightEngine(world)
+
+        init { world.createAll(rx, ry, rz) }
+
+        fun lightEverything() = world.all().forEach { engine.lightChunk(it) }
+
+        fun day(x: Int, y: Int, z: Int) = Light.day(world.lightAt(x, y, z))
+        fun torch(x: Int, y: Int, z: Int) = Light.torch(world.lightAt(x, y, z))
+
+        /** What `ChunkStreamer.setBlockData` does, in miniature. */
+        fun change(x: Int, y: Int, z: Int, type: BlockType) {
+            val was = world.lightAt(x, y, z)
+            world.set(x, y, z, type)
+            engine.onBlockChanged(x, y, z, was)
+        }
+
+        /**
+         * A sealed room: x and z in 0..15, y in 0..15, walled in stone on every side, with
+         * a roof at y=16..31 and optionally a shaft pierced through it at x=8, z=8.
+         *
+         * Sealed matters more than it looks. A room with a forgotten wall in it is lit by
+         * the sky through that gap, every assertion about darkness then passes for the
+         * wrong reason, and the whole section quietly tests nothing while looking thorough.
+         */
+        fun sealedRoom(shaft: Boolean = false) {
+            world.fill(-17, 0, -17, 31, 15, 31, BlockType.STONE)
+            world.fill(0, 0, 0, 15, 15, 15, BlockType.AIR)
+            world.fill(-17, 16, -17, 31, 31, 31, BlockType.STONE)
+            if (shaft) world.fill(8, 16, 8, 8, 31, 8, BlockType.AIR)
+        }
+    }
+
+    /**
+     * Daylight in a room lit only through a shaft bored at x=8, z=8 through the roof.
+     *
+     * Two rules, and the second surprises people:
+     *
+     *  - Light spreads to six neighbours at once, so travelling from the shaft to a Cell
+     *    costs the *sum* of the offsets, not the greatest of them. Writing this as a
+     *    maximum is the mistake that makes a whole room look wrong in a test while the
+     *    engine is right.
+     *  - Height does not appear at all, because the shaft is bored through the whole roof
+     *    and so lights an entire Column. Every Cell of that Column is at full daylight by
+     *    the sky rule before any spreading happens, and each layer of the room is then lit
+     *    sideways from its own shaft Cell. A room lit through a single *hole* rather than
+     *    a whole Column would fall off with depth as well; that is a different test.
+     */
+    fun daylightUnderShaft(x: Int, y: Int, z: Int): Int =
+        if (x == 8 && z == 8) Light.MAX
+        else (Light.MAX - kotlin.math.abs(x - 8) - kotlin.math.abs(z - 8)).coerceAtLeast(0)
+
+    /** How many Cells of a box hold a daylight level other than the one expected. */
+    fun LitFixture.countWrong(expected: (Int, Int, Int) -> Int): Int {
+        var wrong = 0
+        for (y in 0..15) for (z in 0..15) for (x in 0..15) if (day(x, y, z) != expected(x, y, z)) wrong++
+        return wrong
+    }
+
+    /**
+     * A real world with real terrain, lit, without touching a GL context.
+     *
+     * `ChunkStreamer.update` cannot be used here: it meshes, and meshing is a GL call. The
+     * Chunks are created through `chunkAt` instead, which generates on demand and uploads
+     * nothing — the same Chunks the streamer would have made, reached a different way.
+     */
+    fun litTerrain(cx: Int, cz: Int, side: Int, cy0: Int, layers: Int): ChunkStreamer {
+        val streamer = ChunkStreamer()
+        for (x in cx until cx + side) for (z in cz until cz + side) for (y in cy0 until cy0 + layers) {
+            streamer.chunkAt(x * 16, y * 16, z * 16)
+        }
+        for (x in cx until cx + side) for (z in cz until cz + side) for (y in cy0 until cy0 + layers) {
+            streamer.existingChunkAt(x * 16, y * 16, z * 16)?.let { streamer.light.lightChunk(it) }
+        }
+        return streamer
+    }
+
+    println("\n== Light: open sky is full daylight ==")
+    run {
+        val f = LitFixture()
+        f.lightEverything()
+        var notFull = 0
+        var lit = 0
+        for (y in 0 until 48) for (z in -16 until 32) for (x in -16 until 32) {
+            if (f.day(x, y, z) != Light.MAX) notFull++
+            if (f.torch(x, y, z) != 0) lit++
+        }
+        check("a Cell with nothing above it is at full daylight", f.day(8, 8, 8) == Light.MAX)
+        check("and so is every Cell of a world with nothing in it", notFull == 0) { "$notFull Cells were not" }
+        check("none of which is Torchlight, with nothing emitting", lit == 0) { "$lit Cells had Torchlight" }
+    }
+
+    println("\n== Light: a shaft in a roof, and what it does to the room below ==")
+    run {
+        val f = LitFixture()
+        f.sealedRoom(shaft = true)
+        f.lightEverything()
+
+        // Straight down an open Column, daylight does not decay. This is the assertion that
+        // catches it if a future change makes it decay by one per step like everything else.
+        check("daylight falls a Column at full strength", (0..15).none { f.day(8, it, 8) != Light.MAX }) {
+            "cells at ${(0..15).filter { f.day(8, it, 8) != Light.MAX }} were not full"
+        }
+        check("away from the shaft, light costs one level per Cell travelled",
+            (0 until 16).all { f.day(it, 15, 8) == daylightUnderShaft(it, 15, 8) }) {
+            "row y=15 is ${(0 until 16).map { f.day(it, 15, 8) }}"
+        }
+        check("diagonal travel costs two steps, not one", f.day(9, 15, 9) == 13, "got ${f.day(9, 15, 9)}")
+        check("and the whole 16x16x16 room matches that rule", f.countWrong(::daylightUnderShaft) == 0) {
+            "${f.countWrong(::daylightUnderShaft)} Cells differ"
+        }
+        check("a Column shaft lights the room the same at every depth",
+            (0..15).all { y -> (0..15).all { z -> f.day(0, y, z) == f.day(0, 15, z) } }) {
+            "the room is lit per-layer from its shaft Column, so depth does not enter"
+        }
+        check("the roof is opaque to it", f.day(8, 16, 0) == Light.DARK)
+        check("open sky above the roof is untouched", f.day(8, 32, 8) == Light.MAX)
+    }
+
+    println("\n== Light: an emitter lights a room the sky cannot reach ==")
+    run {
+        val f = LitFixture()
+        f.sealedRoom()
+        f.world.set(8, 15, 8, BlockType.GLOWSTONE)   // set into the room's ceiling
+        f.lightEverything()
+
+        // A single Cell of emission, so the falloff is three-dimensional: unlike a shaft,
+        // there is no Column of it to light the room evenly from top to bottom.
+        fun expected(x: Int, y: Int, z: Int) =
+            (BlockType.GLOWSTONE.emission -
+                    (kotlin.math.abs(x - 8) + kotlin.math.abs(y - 15) + kotlin.math.abs(z - 8)))
+                .coerceAtLeast(0)
+
+        check("the emitter sits at its own level", f.torch(8, 15, 8) == BlockType.GLOWSTONE.emission)
+        check("one step sideways costs one", f.torch(9, 15, 8) == 13, "got ${f.torch(9, 15, 8)}")
+        check("one step down costs one too", f.torch(8, 14, 8) == 13, "got ${f.torch(8, 14, 8)}")
+        check("it reaches exactly as far as its level says", run {
+            val reach = BlockType.GLOWSTONE.emission
+            f.torch(8, 15 - reach + 1, 8) == 1 && f.torch(8, 15 - reach, 8) == 0
+        }) {
+            "at reach-1: ${f.torch(8, 15 - BlockType.GLOWSTONE.emission + 1, 8)}, " +
+                    "at reach: ${f.torch(8, 15 - BlockType.GLOWSTONE.emission, 8)}"
+        }
+        check("every Cell of the room is exactly its level minus the distance", run {
+            var wrong = 0
+            for (y in 0..15) for (z in 0..15) for (x in 0..15) {
+                if (f.torch(x, y, z) != expected(x, y, z)) wrong++
+            }
+            wrong == 0
+        }) {
+            "corner (0,0,0) expected ${expected(0, 0, 0)} got ${f.torch(0, 0, 0)}; " +
+                    "middle (8,8,8) expected ${expected(8, 8, 8)} got ${f.torch(8, 8, 8)}"
+        }
+        check("no daylight gets in, because the room is sealed", f.day(8, 8, 8) == 0)
+        check("and the roof does not glow from inside it", f.torch(8, 16, 8) == 0)
+    }
+
+    println("\n== Light: leaves dim what passes through them ==")
+    run {
+        val bare = LitFixture()
+        bare.sealedRoom()
+        bare.world.set(8, 15, 8, BlockType.GLOWSTONE)
+        bare.lightEverything()
+
+        val leafy = LitFixture()
+        leafy.sealedRoom()
+        leafy.world.set(8, 15, 8, BlockType.GLOWSTONE)
+        leafy.world.fill(8, 13, 8, 8, 14, 8, BlockType.LEAVES)
+        leafy.lightEverything()
+
+        check("a leaf costs a step and one more", leafy.torch(8, 12, 8) == bare.torch(8, 12, 8) - 2) {
+            "air ${bare.torch(8, 12, 8)}, through two leaves ${leafy.torch(8, 12, 8)}"
+        }
+        check("leaves do not stop light outright", leafy.torch(8, 12, 8) > 0)
+        check("what gets through is dimmer, not absent",
+            leafy.torch(8, 12, 8) in 1 until bare.torch(8, 12, 8))
+        check("a leaf is lit too, so a canopy glows from within",
+            leafy.torch(8, 14, 8) == BlockType.GLOWSTONE.emission - 2) {
+            "got ${leafy.torch(8, 14, 8)}, expected ${BlockType.GLOWSTONE.emission - 2}"
+        }
+    }
+
+    println("\n== Light: it crosses a Chunk border ==")
+    run {
+        val f = LitFixture()
+        f.sealedRoom()
+        // A tunnel west through the wall at x=-1 and on into the Chunk at cx=-1. The Cells
+        // at x=0 and x=-1 are in different Chunks, so light reaching the second has left
+        // the Chunk the emitter is in.
+        f.world.fill(-12, 15, 8, -1, 15, 8, BlockType.AIR)
+        f.world.set(2, 15, 8, BlockType.GLOWSTONE)
+        f.lightEverything()
+
+        check("light does not stop at the seam", f.torch(-1, 15, 8) == 11) {
+            "got ${f.torch(-1, 15, 8)} — x=-1 is in a different Chunk from x=0"
+        }
+        check("and keeps travelling through it", f.torch(-11, 15, 8) == 1, "got ${f.torch(-11, 15, 8)}")
+        check("reaching the far cap of the tunnel and no further", f.torch(-12, 15, 8) == 0)
+        check("the Cell on the near side of the seam is brighter than the far side",
+            f.torch(0, 15, 8) > f.torch(-1, 15, 8))
+    }
+
+    println("\n== Light: it stops at the frontier instead of inventing the world ==")
+    run {
+        // Only cx=0 exists, so x=-1 and x=16 do not. The room is sealed by the edges of the
+        // world rather than by walls, and light must reach the last existing Cell and stop.
+        //
+        // The Chunks are created by hand rather than by `fill`, because `fill` creates
+        // whatever Chunk holds a Cell it writes — and an earlier version of this test
+        // filled its walls out to x=-17, which quietly created exactly the Chunks it was
+        // asserting did not exist.
+        val world = FlatWorld()
+        world.createAll(rx = 0, ry = 3, rz = 0)
+        val engine = LightEngine(world)
+        world.fill(0, 0, 0, 15, 15, 15, BlockType.AIR)        // the room
+        world.fill(0, 16, 0, 15, 31, 15, BlockType.STONE)     // the roof
+        world.set(2, 15, 8, BlockType.GLOWSTONE)
+        world.all().forEach { engine.lightChunk(it) }
+
+        fun t(x: Int) = Light.torch(world.lightAt(x, 15, 8))
+        check("the frontier does not stop light early inside the world", t(15) == 1,
+            "got ${t(15)} at the +X edge of the Chunk")
+        check("nothing exists beyond it", world.existingChunkAt(-1, 15, 8) == null)
+        check("so nothing is lit beyond it", t(-1) == Light.DARK)
+        check("and the engine did not generate the missing Chunk as a side effect",
+            world.existingChunkAt(16, 15, 8) == null) {
+            "the +X neighbour was created by reading it"
+        }
+    }
+
+    println("\n== Light: the player builds, and the room responds ==")
+    run {
+        val f = LitFixture()
+        f.sealedRoom(shaft = true)
+        f.lightEverything()
+
+        fun wrong() = f.countWrong(::daylightUnderShaft)
+        check("the room starts matching the shaft's falloff", wrong() == 0) { "${wrong()} Cells differ" }
+
+        f.change(8, 20, 8, BlockType.STONE)      // roof the shaft over
+        check("roofing the shaft puts the room back in darkness", f.day(8, 15, 8) == 0) {
+            "got ${f.day(8, 15, 8)} — light left behind after the hole was closed"
+        }
+        check("all of it, not just the Cell underneath", wrong() == 0) { "${wrong()} Cells still lit" }
+        check("and nothing above the new block changed", f.day(8, 21, 8) == Light.MAX)
+
+        f.change(8, 20, 8, BlockType.AIR)        // open it again
+        check("reopening it restores every Cell exactly", wrong() == 0) { "${wrong()} Cells differ" }
+        check("and the shaft itself is full daylight again", f.day(8, 0, 8) == Light.MAX)
+    }
+
+    println("\n== Light: putting the light back gives back exactly the light you took ==")
+    // The strongest single statement available about this engine. Any asymmetry between
+    // "make it darker" and "make it lighter again" — a decay applied twice, a survivor
+    // never re-seeded, the frontier handled differently the second time — shows up here and
+    // almost nowhere else. Run against real terrain rather than a flat world, because the
+    // interesting cases are near a surface where daylight, attenuation and the frontier all
+    // meet at once.
+    run {
+        val streamer = litTerrain(cx = -2, cz = -2, side = 5, cy0 = 5, layers = 6)
+
+        fun snapshot() = (-32..47).flatMap { x ->
+            (0..95).flatMap { y -> (-32..47).map { z -> streamer.lightAt(x, y, z) } }
+        }.toIntArray()
+
+        // Each Cell is changed and then changed back, and the whole region must return.
+        val targets = listOf(
+            Triple(8, 41, 8), Triple(9, 41, 8), Triple(8, 40, 9),
+            Triple(12, 60, 3), Triple(3, 63, 12), Triple(20, 85, -4),
+            Triple(-5, 71, -5), Triple(30, 57, 30), Triple(-20, 63, 18),
+            Triple(40, 100, -40), Triple(-45, 48, 44), Triple(0, 0, 0)
+        )
+
+        var mismatches = 0
+        var firstMismatch = "none"
+        for ((x, y, z) in targets) {
+            val original = streamer.blockAt(x, y, z)
+            val opposite = if (original == BlockType.AIR) BlockType.STONE else BlockType.AIR
+            val before = snapshot()
+            streamer.setBlockData(x, y, z, opposite)
+            streamer.setBlockData(x, y, z, original)
+            val after = snapshot()
+            if (!before.contentEquals(after)) {
+                mismatches++
+                if (firstMismatch == "none") {
+                    val i = before.indices.first { before[it] != after[it] }
+                    val side = 80
+                    firstMismatch = "at (${-32 + i % side}, ${i / (side * side)}, " +
+                            "${-32 + (i / side) % side}) day ${Light.day(before[i])}->${Light.day(after[i])}" +
+                            " torch ${Light.torch(before[i])}->${Light.torch(after[i])}"
+                }
+            }
+        }
+        println("  ${targets.size} edits, each applied and reverted over an 80x96x80 region")
+        check("every build and unbuild returns the light to exactly where it was",
+            mismatches == 0) { "$mismatches of ${targets.size} left a difference; first $firstMismatch" }
+    }
+
+    println("\n== Light: real terrain is lit like terrain should be ==")
+    run {
+        val streamer = litTerrain(cx = -2, cz = -2, side = 5, cy0 = 4, layers = 8)
+
+        var sampled = 0
+        var groundColumns = 0
+        var skyWrong = 0
+        val buriedLit = mutableListOf<Triple<Int, Int, Int>>()
+        for (x in -30..46 step 3) for (z in -30..46 step 3) {
+            val surface = streamer.surfaceAt(x, z) ?: continue
+            sampled++
+            for (dy in 1..3) {
+                if (Light.day(streamer.lightAt(x, surface.worldY + dy, z)) != Light.MAX) skyWrong++
+            }
+            // Only Columns the ground actually caps. A tree's Surface is a leaf, and
+            // leaves are not a roof: daylight really does fall past a canopy into the gap
+            // under it, so asserting otherwise here would be asserting that trees cast
+            // shadows, which they do not in this model.
+            if (surface.type != BlockType.GRASS && surface.type != BlockType.DIRT) continue
+            groundColumns++
+            if (surface.worldY - 6 >= 0 &&
+                Light.day(streamer.lightAt(x, surface.worldY - 6, z)) == Light.MAX) {
+                buriedLit.add(Triple(x, surface.worldY - 6, z))
+            }
+        }
+        check("every Column sampled has a Surface", sampled > 200, "only $sampled")
+        check("open air above the ground is full daylight", skyWrong == 0,
+            "$skyWrong Cells just above the Surface were not")
+        check("most sampled Columns are capped by actual ground", groundColumns > sampled / 2,
+            "$groundColumns of $sampled")
+        check("six Cells under solid ground is not full daylight", buriedLit.isEmpty()) {
+            "lit at $buriedLit"
+        }
+        check("and glowstone does light the dark", run {
+            var lit = 0
+            for (x in -30..46 step 5) for (y in 0..127) for (z in -30..46 step 5) {
+                if (Light.torch(streamer.lightAt(x, y, z)) > 0) lit++
+            }
+            lit > 0
+        }, "no Cell in the sampled region had any Torchlight at all")
+    }
 
     println("\n== Sounds: every Material maps, and AIR does not ==")
     check("every solid Block Type has a Material",

@@ -47,12 +47,18 @@ class ChunkStreamer(
     private val renderDistance: Int = 4,
     private val verticalRenderDistance: Int = 3,
     private val maxMeshesPerFrame: Int = 8
-) : SolidWorld, Neighbourhood {
+) : SolidWorld, LitWorld {
 
     private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
 
     /** The subset of [chunks] that currently holds GPU memory. Never grows without bound. */
     val meshed = mutableSetOf<Chunk>()
+
+    /**
+     * Fills Chunks with light. Owned here rather than passed in, because a Chunk is not
+     * lit until something asks for it and the streamer is what asks.
+     */
+    val light = LightEngine(this)
 
     // --- The world as the game sees it ---
 
@@ -84,7 +90,7 @@ class ChunkStreamer(
      * reading a Chunk whose own light has not been computed, and meshing it there and
      * then would upload a Chunk lit from nothing.
      */
-    fun existingChunkAt(x: Int, y: Int, z: Int): Chunk? {
+    override fun existingChunkAt(x: Int, y: Int, z: Int): Chunk? {
         val cy = Math.floorDiv(y, Chunk.SIZE)
         if (cy < 0 || cy >= Chunk.HEIGHT_LAYERS) return null
         return chunks[Triple(Math.floorDiv(x, Chunk.SIZE), cy, Math.floorDiv(z, Chunk.SIZE))]
@@ -113,16 +119,57 @@ class ChunkStreamer(
         )
     }
 
+    override fun lightAt(x: Int, y: Int, z: Int): Int {
+        val chunk = existingChunkAt(x, y, z) ?: return Light.DARK
+        return chunk.packedLightAt(
+            Math.floorMod(x, Chunk.SIZE), Math.floorMod(y, Chunk.SIZE), Math.floorMod(z, Chunk.SIZE)
+        )
+    }
+
+    override fun setLight(x: Int, y: Int, z: Int, packed: Int): Chunk? {
+        val chunk = existingChunkAt(x, y, z) ?: return null
+        chunk.setPackedLight(
+            Math.floorMod(x, Chunk.SIZE), Math.floorMod(y, Chunk.SIZE), Math.floorMod(z, Chunk.SIZE), packed
+        )
+        return chunk
+    }
+
     /**
-     * Writes [type] into the world and re-meshes the affected Chunk. Returns false if
-     * the Cell is outside the world, in which case nothing happened.
+     * Writes [type] into the world and brings the light around it up to date. No GL.
+     *
+     * This is the whole of what a block change means to the *data*, separated from
+     * re-uploading triangles so that it can be exercised without a context. Returns false
+     * if the Cell is outside the world, in which case nothing happened.
+     */
+    fun setBlockData(x: Int, y: Int, z: Int, type: BlockType): Boolean {
+        val chunk = chunkAt(x, y, z) ?: return false
+        val lx = Math.floorMod(x, Chunk.SIZE)
+        val ly = Math.floorMod(y, Chunk.SIZE)
+        val lz = Math.floorMod(z, Chunk.SIZE)
+
+        // Read the Cell's light before the write, because the write clears it. The engine
+        // needs the old level to know how much light the change was letting through, and
+        // there is no way to infer it afterwards.
+        val wasPacked = chunk.packedLightAt(lx, ly, lz)
+
+        chunk.setBlock(lx, ly, lz, type)
+        light.onBlockChanged(x, y, z, wasPacked)
+        return true
+    }
+
+    /**
+     * [setBlockData], plus re-meshing the Chunk and any neighbour whose light changed.
+     *
+     * The neighbours matter: light that crossed into another Chunk has made that Chunk's
+     * triangles wrong. They are only re-meshed if they are actually being drawn, so
+     * building far from the view costs nothing extra.
      */
     fun setBlock(x: Int, y: Int, z: Int, type: BlockType): Boolean {
-        val chunk = chunkAt(x, y, z) ?: return false
-        chunk.setBlock(Math.floorMod(x, Chunk.SIZE), Math.floorMod(y, Chunk.SIZE), Math.floorMod(z, Chunk.SIZE), type)
+        if (!setBlockData(x, y, z, type)) return false
         // Registered here rather than at the call site: a mesh nobody tracks would be
         // drawn as nothing and never freed.
-        mesh(chunk)
+        mesh(chunkAt(x, y, z)!!)
+        for (touched in light.takeDirty()) if (touched in meshed) mesh(touched)
         return true
     }
 
@@ -179,9 +226,19 @@ class ChunkStreamer(
             dx * dx + dy * dy + dz * dz
         }) {
             if (built >= maxMeshesPerFrame) break
-            mesh(chunks.getOrPut(pos) { Chunk(pos.first, pos.second, pos.third) })
+            val chunk = chunks.getOrPut(pos) { Chunk(pos.first, pos.second, pos.third) }
+            // Light before triangles, always. A mesh built from a Chunk whose light has not
+            // been computed would upload a Chunk lit from nothing and draw it, and the only
+            // symptom would be a patch of the world that is the wrong brightness for no
+            // reason anyone could name.
+            light.lightChunk(chunk)
+            mesh(chunk)
             built++
         }
+
+        // Light stepped over a border while filling, so some Chunks already meshed may now
+        // hold triangles built from light that has since changed.
+        for (touched in light.takeDirty()) if (touched in meshed) mesh(touched)
     }
 
     /** Meshes [chunk], replacing whatever it had on the GPU before. */
