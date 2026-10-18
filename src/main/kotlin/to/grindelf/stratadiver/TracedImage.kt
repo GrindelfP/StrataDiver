@@ -23,6 +23,7 @@ import org.lwjgl.opengl.GL11.glTexParameteri
 import org.lwjgl.opengl.GL11.glTexSubImage2D
 import org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE
 import org.lwjgl.opengl.GL13.GL_TEXTURE0
+import org.lwjgl.opengl.GL13.GL_TEXTURE2
 import org.lwjgl.opengl.GL13.glActiveTexture
 import org.lwjgl.opengl.GL30.glBindVertexArray
 import java.nio.ByteBuffer
@@ -65,6 +66,20 @@ class TracedImage(
     private var allocatedHeight = 0
 
     /**
+     * Which texture unit the picture lives on.
+     *
+     * Not unit 0, and never unit 0 again. Unit 0 belongs to the Atlas: every HUD quad in
+     * the game samples `textureAtlas`, which the shader resolves to unit 0, and this class
+     * used to leave its picture bound there. The HUD then sampled the traced image instead
+     * of its own art — the crosshair became a 20x20 window onto the scene, every hotbar
+     * icon became a skewed one, and the FPS digits changed colour as the picture converged
+     * while their shape, being solid rectangles, could not. None of it raised an error: a
+     * texture unit is global state, and leaving one bound is not a mistake the driver has
+     * any way to report.
+     */
+    private val unit = 2
+
+    /**
      * The staging buffer the picture is copied through, kept between frames.
      *
      * Direct, because the driver takes an address out of it and a heap array has none; and
@@ -93,7 +108,7 @@ class TracedImage(
         buffer.position(0)
         buffer.limit(needed)
 
-        glActiveTexture(GL_TEXTURE0)
+        glActiveTexture(GL_TEXTURE0 + unit)
         glBindTexture(GL_TEXTURE_2D, texture)
 
         if (width != allocatedWidth || height != allocatedHeight) {
@@ -113,9 +128,9 @@ class TracedImage(
     fun draw() {
         glDisable(GL_DEPTH_TEST)
         shader.use()
-        glActiveTexture(GL_TEXTURE0)
+        glActiveTexture(GL_TEXTURE0 + unit)
         glBindTexture(GL_TEXTURE_2D, texture)
-        shader.setInt("image", 0)
+        shader.setInt("image", unit)
         shader.setMatrix("projection", projection)
         shader.setMatrix("model", model)
         glBindVertexArray(quad.vao)

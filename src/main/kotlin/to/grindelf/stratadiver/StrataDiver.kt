@@ -319,7 +319,7 @@ class StrataDiver {
         tracedImage = TracedImage(WINDOW_WIDTH, WINDOW_HEIGHT)
         minimap = Minimap(streamer)
         minimapTexture = uploadMinimapTexture()
-        ui = UiPass(shader, WINDOW_WIDTH, WINDOW_HEIGHT)
+        ui = UiPass(shader, atlasTexture, WINDOW_WIDTH, WINDOW_HEIGHT)
         player = Player(streamer)
 
         // Audio is optional by design: a failure here is logged and the game runs quietly.

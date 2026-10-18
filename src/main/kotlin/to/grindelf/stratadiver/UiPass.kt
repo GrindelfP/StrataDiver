@@ -24,7 +24,13 @@ import java.nio.FloatBuffer
  * disagreeing about depth testing, projection and which Tile of the atlas they sample.
  * It was five copies of the same seven lines of setup before.
  */
-class UiPass(private val shader: ShaderProgram, val width: Float, val height: Float) {
+class UiPass(
+    private val shader: ShaderProgram,
+    /** The Atlas every HUD quad samples. Bound by [begin], on this pass's own terms. */
+    private val atlas: Int,
+    val width: Float,
+    val height: Float
+) {
 
     private val quad = Geometry.upload(UNIT_QUAD, Geometry.POS_UV)!!
     private val square = Geometry.upload(UNIT_SQUARE, Geometry.POS_UV)!!
@@ -36,10 +42,25 @@ class UiPass(private val shader: ShaderProgram, val width: Float, val height: Fl
     private val projection = Matrix4f().ortho(0f, width, height, 0f, -1f, 1f)
     private val identity = Matrix4f()
 
-    /** Starts a GUI layer: screen-space projection, no depth test, unlit. */
+    /**
+     * Starts a GUI layer: screen-space projection, no depth test, unlit.
+     *
+     * The Atlas is bound here rather than by whoever drew last. Texture unit 0 is global
+     * state that outlives every pass: the world pass used to bind the Atlas and leave it,
+     * which was true right up until the path tracer replaced that pass and left a picture
+     * there instead. Nothing complained. The HUD sampled it, the crosshair turned into a
+     * little window onto the world, and the FPS readout changed colour with the average
+     * while keeping its shape — which is exactly the kind of bug that survives a playtest
+     * because every part of it is individually plausible.
+     *
+     * So a pass binds what it reads, every time it begins, and never inherits.
+     */
     fun begin() {
         shader.use()
         glDisable(GL_DEPTH_TEST)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, atlas)
+        shader.setInt("textureAtlas", 0)
         shader.setMatrix("projection", projection)
         shader.setMatrix("view", identity)
         // isEntity is what makes the vertex shader offset the quad's 0..1 UVs into the
