@@ -653,25 +653,35 @@ object MeshGenerator {
             // and then staying flat. Opaque Cells are skipped rather than counted as dark:
             // a corner tucked against a wall should be as bright as the room it is in, not
             // as dark as the wall.
+            //
+            // Cells in a non-existent Chunk are skipped for the same reason and with more
+            // force: lightAt answers DARK for them, and counting that as a real reading
+            // would drag the average toward black along every frontier edge in the world.
             var day = 0
             var torch = 0
             var open = 0
 
-            val inFront = world.lightAt(base[0], base[1], base[2])
-            day += Light.day(inFront); torch += Light.torch(inFront); open++
+            if (world.blockAtOrNull(base[0], base[1], base[2]) != null) {
+                val l = world.lightAt(base[0], base[1], base[2])
+                day += Light.day(l); torch += Light.torch(l); open++
+            }
 
-            if (s1 == 0) {
+            if (s1 == 0 && world.blockAtOrNull(side1[0], side1[1], side1[2]) != null) {
                 val l = world.lightAt(side1[0], side1[1], side1[2])
                 day += Light.day(l); torch += Light.torch(l); open++
             }
-            if (s2 == 0) {
+            if (s2 == 0 && world.blockAtOrNull(side2[0], side2[1], side2[2]) != null) {
                 val l = world.lightAt(side2[0], side2[1], side2[2])
                 day += Light.day(l); torch += Light.torch(l); open++
             }
-            if (co == 0) {
+            if (co == 0 && world.blockAtOrNull(corner[0], corner[1], corner[2]) != null) {
                 val l = world.lightAt(corner[0], corner[1], corner[2])
                 day += Light.day(l); torch += Light.torch(l); open++
             }
+
+            // A corner with no Cells to average (all four in missing Chunks) reads as fully
+            // lit rather than fully dark: the absence of evidence is not evidence of dark.
+            if (open == 0) open = 1
 
             into[index * 3] = shade.toFloat()
             into[index * 3 + 1] = day * LIGHT_SCALE / open

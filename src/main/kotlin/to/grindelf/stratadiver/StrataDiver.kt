@@ -648,7 +648,7 @@ class StrataDiver {
         val placePos = Vector3i(target.blockPos).add(target.faceNormal)
         if (player.intersects(placePos)) return // Never seal the player inside a block
 
-        val type = inventory.hotbar[selectedSlot]?.type ?: BlockType.STONE
+        val type = inventory.hotbar[selectedSlot]?.type ?: return // Nothing in hand, nothing placed
         streamer.setBlock(placePos.x, placePos.y, placePos.z, type)
         minimap.invalidate()
 
