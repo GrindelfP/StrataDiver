@@ -375,13 +375,7 @@ object Art {
      */
     fun buildAtlas(): ByteBuffer {
         val size = Atlas.TILES * Atlas.TILE_PX
-        val pixels = IntArray(size * size) // 0xAARRGGBB
-
-        for ((ref, art) in tiles) {
-            val originX = ref.tx * Atlas.TILE_PX
-            val originY = ref.ty * Atlas.TILE_PX
-            renderTile(pixels, size, originX, originY, art)
-        }
+        val pixels = buildAtlasPixels()
 
         val buffer = java.nio.ByteBuffer.allocateDirect(size * size * 4)
         for (p in pixels) {
@@ -392,6 +386,26 @@ object Art {
         }
         buffer.flip()
         return buffer
+    }
+
+    /**
+     * The Atlas as pixels rather than as a GPU-ready buffer: 0xAARRGGBB, row 0 first.
+     *
+     * Exists so the path tracer can read the same art the GPU reads. Two copies of this
+     * art would be two copies to keep in step, and the copy that drifts is the one nobody
+     * is looking at.
+     */
+    fun buildAtlasPixels(): IntArray {
+        val size = Atlas.TILES * Atlas.TILE_PX
+        val pixels = IntArray(size * size) // 0xAARRGGBB
+
+        for ((ref, art) in tiles) {
+            val originX = ref.tx * Atlas.TILE_PX
+            val originY = ref.ty * Atlas.TILE_PX
+            renderTile(pixels, size, originX, originY, art)
+        }
+
+        return pixels
     }
 
     private fun renderTile(pixels: IntArray, size: Int, ox: Int, oy: Int, art: TileArt) {

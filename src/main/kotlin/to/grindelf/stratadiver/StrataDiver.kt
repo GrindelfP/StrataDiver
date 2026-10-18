@@ -98,6 +98,37 @@ class StrataDiver {
         /** How close a Dropped Item must get to the player's feet to be collected. */
         private const val PICKUP_RADIUS = 0.5f
 
+        /**
+         * How much slower the path tracer renders than the window is, before it starts
+         * adapting on its own.
+         *
+         * A path tracer is not a thing you can render at any resolution at any speed; it is
+         * a thing you render at whatever resolution the machine can afford and average until
+         * it is good enough. Two is a reasonable middle: soft shadows and colour bleed are
+         * low-frequency and survive being traced small, while the 16x16 art is re-sampled
+         * per ray and does not care about the resolution at all.
+         */
+        private const val DEFAULT_PATH_SCALE = 2
+
+        /** What the adaptive resolution aims for, per frame, in milliseconds. */
+        private const val PATH_BUDGET_MS = 55.0
+
+        /**
+     * How far the adaptive resolution is allowed to wander, in either direction. */
+        private const val PATH_SCALE_LIMIT = 8
+
+        /** How many frames of tracing stand between two decisions about the resolution. */
+        private const val SCALE_DECISION_FRAMES = 24
+
+        /**
+         * The lens.
+         *
+         * One number, stated once, because the rasterizer's projection matrix and the
+         * tracer's ray generator are two descriptions of the same lens and nothing is
+         * watching them to notice a disagreement.
+         */
+        private const val FOV_DEGREES = 70f
+
         private const val MAX_STACK = 64
 
         /**
@@ -146,7 +177,7 @@ class StrataDiver {
 
     // --- Camera ---
     private val projection = Matrix4f().perspective(
-        Math.toRadians(70.0).toFloat(), WINDOW_WIDTH / WINDOW_HEIGHT, 0.1f, 100f
+        Math.toRadians(FOV_DEGREES.toDouble()).toFloat(), WINDOW_WIDTH / WINDOW_HEIGHT, 0.1f, 100f
     )
     private val view = Matrix4f()
     private val identity = Matrix4f()
@@ -164,6 +195,57 @@ class StrataDiver {
     private lateinit var minimap: Minimap
     private var minimapTexture = 0
     private lateinit var minimapMesh: Mesh
+
+    // --- Path tracing ---
+
+    /**
+     * The renderer. Pure Kotlin, no GL: it takes a camera and a world and produces an
+     * average of what light does when it is allowed to travel.
+     */
+    private lateinit var tracer: PathTracer
+
+    /** Puts that average on the screen. */
+    private lateinit var tracedImage: TracedImage
+
+    /**
+     * Whether the world is drawn by tracing rays or by rasterizing meshes.
+     *
+     * Both are here for now. The rasterizer is parked, not deleted: it is the only renderer
+     * whose *appearance* anyone has actually looked at, so keeping it costs one boolean and
+     * one `if` and buys the ability to answer "is the new renderer wrong, or is the world
+     * wrong" by pressing a key. Once the look is signed off it goes, along with the mesher
+     * and the light engine behind it.
+     */
+    private var pathTracing = true
+
+    /** The tracer's resolution divisor. See [DEFAULT_PATH_SCALE]. */
+    private var pathScale = DEFAULT_PATH_SCALE
+
+    /**
+     * What the last frame of tracing cost, and the running average of that.
+     *
+     * The scale adapts on this because a path tracer has no frame budget to spend by
+     * default — it will happily spend 400ms a frame and look wonderful and be unplayable.
+     * Adapting on a measured cost rather than a guessed one is the difference between this
+     * working on a laptop and this working only on the machine it was written on.
+     */
+    private var traceMillis = 0.0
+    private var traceMillisAveraged = 0.0
+    private var traceSamplesAveraged = 0
+    private var lastTraceVersion = -1
+    private var lastTraceEntities = -1
+    private val lastEye = Vector3f()
+    private val lastLook = Vector3f()
+    private var haveLastEye = false
+
+    /**
+     * How bright the day is, decided once a frame by the game and read by both renderers.
+     *
+     * Floored rather than allowed to reach zero: a night in this world is dim, not a void,
+     * and a renderer that took the floor to zero would be obeying an instruction nobody
+     * meant to give it.
+     */
+    private var daylight = 1f
 
     /**
      * How much of the map's own world to generate per frame.
@@ -233,6 +315,8 @@ class StrataDiver {
         itemCube = Geometry.upload(UNIT_CUBE, Geometry.POS_UV_NORMAL)!!
         selectionBox = Geometry.upload(SELECTION_BOX, Geometry.POS_UV)!!
         minimapMesh = Geometry.upload(UNIT_SQUARE, Geometry.POS_UV)!!
+        tracer = PathTracer(streamer, Art.buildAtlasPixels())
+        tracedImage = TracedImage(WINDOW_WIDTH, WINDOW_HEIGHT)
         minimap = Minimap(streamer)
         minimapTexture = uploadMinimapTexture()
         ui = UiPass(shader, WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -355,7 +439,7 @@ class StrataDiver {
             val moonDir = Vector3f(sunDir).mul(-1f)
 
             // Sky brightness follows the sun, floored so night is dim rather than a void.
-            val daylight = max(0.05f, sunDir.y)
+            daylight = max(0.05f, sunDir.y)
             glClearColor(0.5f * daylight, 0.8f * daylight, daylight + 0.1f, 1.0f)
 
             readInput()
@@ -482,6 +566,128 @@ class StrataDiver {
     }
 
     private fun drawFrame(sunDir: Vector3f, moonDir: Vector3f) {
+        if (pathTracing) drawTracedWorld(sunDir) else drawRasterWorld(sunDir, moonDir)
+
+        // The GUI goes last and flat, over whichever renderer produced the picture.
+        Hud.minimap(ui, minimapTexture, minimap, player, MINIMAP_DIAMETER, MINIMAP_MARGIN)
+        Hud.crosshair(ui)
+        fps.render(ui)
+        Hud.hotbar(ui, layout, inventory, selectedSlot)
+        if (inventoryOpen) {
+            Hud.inventory(ui, layout, inventory)
+            cursorItem?.let { Hud.heldItem(ui, it, cursorX(), cursorY()) }
+        }
+    }
+
+    // --- Path traced ---
+
+    /**
+     * The world, as the average of a great many rays finding their way through it.
+     *
+     * Three things happen here that have nothing to do with tracing and everything to do with
+     * the fact that this is a *progressive* renderer, and each of them is a way of being
+     * wrong that produces a plausible picture rather than an obvious failure:
+     *
+     *  - The average is thrown away whenever the eye moves or the world changes. Keeping it
+     *    would produce a sharp, converged, confidently wrong picture — the failure mode this
+     *    whole renderer is least well defended against, because it looks like success.
+     *  - The resolution adapts to a *measured* cost. Nothing here is tuned to a machine.
+     *  - Everything is drawn by the tracer, including the dropped items and the wireframe.
+     *    There is no depth buffer behind the picture for them to sort against, so a hybrid
+     *    would be guessing, and a guess about occlusion is exactly the bug that costs a day.
+     */
+    private fun drawTracedWorld(sunDir: Vector3f) {
+        val width = (WINDOW_WIDTH / pathScale).toInt().coerceAtLeast(16)
+        val height = (WINDOW_HEIGHT / pathScale).toInt().coerceAtLeast(16)
+
+        val scene = TraceScene(
+            Camera(player.position, player.front, player.up, FOV_DEGREES, WINDOW_WIDTH / WINDOW_HEIGHT),
+            sunDir,
+            daylight,
+            entities,
+            aimedAt?.blockPos
+        )
+
+        if (sceneHasMoved()) {
+            tracer.reset()
+            lastEye.set(player.position)
+            lastLook.set(player.front)
+            lastTraceVersion = streamer.version
+            lastTraceEntities = entities.size
+            haveLastEye = true
+            traceSamplesAveraged = 0
+        }
+        tracer.resize(width, height)
+
+        val started = System.nanoTime()
+        tracer.sample(scene)
+        traceMillis = (System.nanoTime() - started) / 1e6
+        adaptPathScale()
+
+        tracedImage.update(tracer.rgba(), tracer.width, tracer.height)
+        tracedImage.draw()
+    }
+
+    /**
+     * Whether the average on the screen describes a scene that still exists.
+     *
+     * Compared rather than inferred, because every alternative here is a guess about when
+     * something changed, and a guess that is wrong in the direction of "nothing changed"
+     * shows up as a picture that is subtly smeared and never sharpens — which looks exactly
+     * like a renderer merely converging slowly, and is the failure this renderer is least
+     * well defended against.
+     */
+    private fun sceneHasMoved(): Boolean {
+        if (!haveLastEye) return true
+        if (streamer.version != lastTraceVersion) return true
+        // An item appearing or being collected changes what is in the world. An item
+        // *spinning* is deliberately not in this list: it changes every frame, so including
+        // it would mean the average never gets past one sample while anything lies on the
+        // ground. The cost of leaving it out is a faint trail behind a dropped item, which is
+        // a far smaller price than never converging.
+        if (entities.size != lastTraceEntities) return true
+        if (Vector3f(player.position).sub(lastEye).length() > 1e-4f) return true
+        if (Vector3f(player.front).sub(lastLook).length() > 1e-4f) return true
+        return false
+    }
+
+    /**
+     * Trades resolution for frame time, on measurement.
+     *
+     * Averaged over [SCALE_DECISION_FRAMES] frames rather than judged on the last one. A
+     * single frame is not a measurement of anything: the first after a reset is cold and the
+     * last before one is cheap, so deciding on either moves the resolution for the wrong
+     * reason and then oscillates — a picture that is sharp one frame and coarse the next,
+     * which is worse than either.
+     */
+    private fun adaptPathScale() {
+        traceMillisAveraged = if (traceSamplesAveraged == 0) traceMillis
+        else traceMillisAveraged * 0.85 + traceMillis * 0.15
+        traceSamplesAveraged++
+        if (traceSamplesAveraged < SCALE_DECISION_FRAMES) return
+
+        val moving = when {
+            traceMillisAveraged > PATH_BUDGET_MS -> 1
+            traceMillisAveraged < PATH_BUDGET_MS / 3 -> -1
+            else -> 0
+        }
+        traceSamplesAveraged = 0
+
+        if (moving != 0) {
+            val wanted = (pathScale + moving).coerceIn(1, PATH_SCALE_LIMIT)
+            if (wanted != pathScale) {
+                pathScale = wanted
+                // resize() discards the average, so the picture restarts at the new size
+                // rather than being stretched from the old one.
+                tracer.resize((WINDOW_WIDTH / pathScale).toInt().coerceAtLeast(16),
+                    (WINDOW_HEIGHT / pathScale).toInt().coerceAtLeast(16))
+            }
+        }
+    }
+
+    // --- Rasterized ---
+
+    private fun drawRasterWorld(sunDir: Vector3f, moonDir: Vector3f) {
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
         shader.use()
 
@@ -498,16 +704,6 @@ class StrataDiver {
 
         drawWorld()
         drawSelection()
-
-        // The GUI goes last and flat, once the 3D pass has handed depth testing back.
-        Hud.minimap(ui, minimapTexture, minimap, player, MINIMAP_DIAMETER, MINIMAP_MARGIN)
-        Hud.crosshair(ui)
-        fps.render(ui)
-        Hud.hotbar(ui, layout, inventory, selectedSlot)
-        if (inventoryOpen) {
-            Hud.inventory(ui, layout, inventory)
-            cursorItem?.let { Hud.heldItem(ui, it, cursorX(), cursorY()) }
-        }
     }
 
     private fun drawWorld() {
@@ -582,6 +778,22 @@ class StrataDiver {
     private fun onGameplayKey(key: Int) {
         if (key in GLFW_KEY_1..GLFW_KEY_9) selectedSlot = key - GLFW_KEY_1
         if (key == GLFW_KEY_E) openInteractiveLayer()
+        if (key == GLFW_KEY_F) toggleRenderer()
+    }
+
+    /**
+     * Swaps between the path tracer and the old rasterizer.
+     *
+     * A key rather than a constant, because for as long as both exist "the world looks wrong"
+     * has two candidate answers and only one of them is a bug. Being able to press a key and
+     * look is the difference between a diagnosis and a guess.
+     */
+    private fun toggleRenderer() {
+        pathTracing = !pathTracing
+        tracer.reset()
+        haveLastEye = false
+        glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
+        println("Renderer: ${if (pathTracing) "path tracer" else "rasterizer"}")
     }
 
     private fun onInteractiveKey(key: Int) {
@@ -722,6 +934,7 @@ class StrataDiver {
         // Release every live mesh before the context dies, so a normal exit does not leave
         // the driver holding the world's vertex buffers.
         streamer.releaseAll()
+        tracedImage.release()
         ui.release()
         minimapMesh.release()
         sound.stop()

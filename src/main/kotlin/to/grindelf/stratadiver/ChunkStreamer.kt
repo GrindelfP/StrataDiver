@@ -35,6 +35,21 @@ interface Neighbourhood {
 }
 
 /**
+ * The world addressed the way a ray addresses it: by grid position, not by Cell.
+ *
+ * A path tracer walks one Cell at a time and so asks the same question hundreds of times
+ * per ray — "which Chunk am I in?" — and the answer does not change for sixteen steps at a
+ * time. Handing out the Chunk rather than the Block Type lets it hold on to one, and the
+ * walk turns into a bounds check and an array read per Cell instead of a map lookup.
+ *
+ * Never generates. See [Neighbourhood] for why looking must not bring the world into being.
+ */
+interface GridWorld {
+    /** The Chunk at this grid position, or null where there is none. */
+    fun existingChunk(cx: Int, cy: Int, cz: Int): Chunk?
+}
+
+/**
  * Decides which Chunks exist, which of them hold GPU memory, and what is in them.
  *
  * Two lifetimes are deliberately kept apart. [chunks] is the world's Cells, created on
@@ -47,9 +62,34 @@ class ChunkStreamer(
     private val renderDistance: Int = 4,
     private val verticalRenderDistance: Int = 3,
     private val maxMeshesPerFrame: Int = 8
-) : SolidWorld, LitWorld {
+) : SolidWorld, LitWorld, GridWorld {
 
     private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
+
+    /**
+     * How many times the world's *visible* content has changed since the game started.
+     *
+     * A progressive renderer has to be told when the picture it has been averaging is no
+     * longer the picture. Break a block and it is obvious; a Chunk appearing at the edge of
+     * the streamed band is not, and without this the tracer would quietly keep averaging in
+     * terrain that has since been generated and converge on a world that is half a minute
+     * out of date.
+     *
+     * Only Chunks the *streamer* makes count. The Minimap generates its own, several hundred
+     * Cells away and never drawn in 3D, and counting those would reset the accumulation a
+     * dozen times a second and the image would never get sharper than one sample.
+     */
+    var version: Int = 0
+        private set
+
+    /** [chunks] lookup by grid position, counting a Chunk born here as a visible change. */
+    private fun chunkAtGrid(cx: Int, cy: Int, cz: Int): Chunk {
+        val key = Triple(cx, cy, cz)
+        return chunks.getOrPut(key) {
+            version++
+            Chunk(cx, cy, cz)
+        }
+    }
 
     /** The subset of [chunks] that currently holds GPU memory. Never grows without bound. */
     val meshed = mutableSetOf<Chunk>()
@@ -77,7 +117,12 @@ class ChunkStreamer(
         if (cy < 0 || cy >= Chunk.HEIGHT_LAYERS) return null
         val cx = Math.floorDiv(x, Chunk.SIZE)
         val cz = Math.floorDiv(z, Chunk.SIZE)
-        return chunks.getOrPut(Triple(cx, cy, cz)) { Chunk(cx, cy, cz) }
+        return chunkAtGrid(cx, cy, cz)
+    }
+
+    override fun existingChunk(cx: Int, cy: Int, cz: Int): Chunk? {
+        if (cy < 0 || cy >= Chunk.HEIGHT_LAYERS) return null
+        return chunks[Triple(cx, cy, cz)]
     }
 
     /**
@@ -153,6 +198,7 @@ class ChunkStreamer(
         val wasPacked = chunk.packedLightAt(lx, ly, lz)
 
         chunk.setBlock(lx, ly, lz, type)
+        version++
         light.onBlockChanged(x, y, z, wasPacked)
         return true
     }
@@ -248,7 +294,7 @@ class ChunkStreamer(
             dx * dx + dy * dy + dz * dz
         }) {
             if (built >= maxMeshesPerFrame) break
-            val chunk = chunks.getOrPut(pos) { Chunk(pos.first, pos.second, pos.third) }
+            val chunk = chunkAtGrid(pos.first, pos.second, pos.third)
             // Light before triangles, always. A mesh built from a Chunk whose light has not
             // been computed would upload a Chunk lit from nothing and draw it, and the only
             // symptom would be a patch of the world that is the wrong brightness for no

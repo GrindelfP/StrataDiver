@@ -43,6 +43,33 @@ abstract class Entity(
     /** The Tile this Entity is drawn from. */
     abstract fun tile(): TileRef
 
+    /**
+     * The Block Type this Entity is made of, if it is made of one at all.
+     *
+     * Null for anything that is not a thing you could have picked up and put down. The path
+     * tracer needs it for emission and for the name of what it is looking at; the
+     * rasterizer has never needed it, because everything was a Tile and a cube.
+     */
+    open val blockType: BlockType? get() = null
+
+    /**
+     * Where the Entity is actually drawn, which is not always where it is simulated.
+     *
+     * A dropped item bobs as it spins. The rasterizer learned that from [modelMatrix] and
+     * the path tracer needs the same number, so it is stated once here rather than worked
+     * out twice in two places that would then disagree.
+     */
+    open fun drawCentre(): Vector3f = pos
+
+    /**
+     * Half the width of the box this Entity is drawn from, in Cells.
+     *
+     * Deliberately not [width] and [height]: those are the collision box, which is bigger
+     * than the picture because it has to stop the player walking through a thing that looks
+     * small.
+     */
+    open fun halfExtent(): Float = 0.125f
+
     fun update(world: SolidWorld) {
         vel.y -= 0.015f // Matches player gravity
 
@@ -71,10 +98,17 @@ abstract class Entity(
 /** An item that fell out of a broken Cell and is waiting to be picked up. */
 class DroppedItem(pos: Vector3f, val type: BlockType) : Entity(pos, 0.15f, 0.3f) {
 
+    override val blockType: BlockType get() = type
+
+    /** How high the item rides at this moment of its spin. */
+    private val bob: Float get() = (Math.sin(rotation.toDouble()) * 0.05).toFloat() * 0.1f
+
+    override fun drawCentre(): Vector3f = Vector3f(pos.x, pos.y + bob, pos.z)
+
     override fun modelMatrix(): Matrix4f {
-        val bobbing = (Math.sin(rotation.toDouble()) * 0.05).toFloat() * 0.1f
+        val centre = drawCentre()
         return Matrix4f()
-            .translation(pos.x, pos.y + bobbing, pos.z)
+            .translation(centre.x, centre.y, centre.z)
             .rotate(Math.toRadians(rotation.toDouble()).toFloat(), 0f, 1f, 0f)
             .scale(0.25f) // Scale the unit cube down to item size
     }

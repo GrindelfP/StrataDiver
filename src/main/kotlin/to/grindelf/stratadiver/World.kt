@@ -149,7 +149,24 @@ enum class BlockType(
     val texY: Int get() = primary.ty
 
     companion object {
-        fun getById(id: Byte) = entries.find { it.id == id } ?: AIR
+        /**
+         * Every Block Type by its id, so that reading a Cell is an array index.
+         *
+         * This is the innermost operation in the game. A path tracer asks the same question
+         * once per Cell per ray, hundreds of times per pixel, and `entries.find` is a linear
+         * scan with a lambda behind it — not the shape you want at that rate.
+         */
+        private val byId: Array<BlockType> = Array(entries.size) { AIR }
+
+        init {
+            for (type in entries) byId[type.id.toInt()] = type
+        }
+
+        /** The Block Type with this id, or AIR for an id no Block Type has. */
+        fun getById(id: Byte): BlockType {
+            val index = id.toInt()
+            return if (index in byId.indices) byId[index] else AIR
+        }
     }
 }
 

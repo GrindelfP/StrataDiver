@@ -1332,7 +1332,509 @@ fun main() {
     check("a pickup lands in the hotbar first", inv.addItem(BlockType.STONE) && inv.hotbar[0]?.type == BlockType.STONE)
     check("the same type stacks", run { repeat(10) { inv.addItem(BlockType.STONE) }; inv.hotbar[0]?.count == 11 })
 
+    pathTracingChecks()
+
     println()
     if (failures == 0) println("All checks passed.") else println("$failures FAILED")
     if (failures > 0) kotlin.system.exitProcess(1)
+}
+
+/**
+ * Everything about the path tracer that can be asserted without a window.
+ *
+ * The renderer is pure Kotlin, which means the whole of it — the Cell walk, the light
+ * transport, the accumulation — can be driven against a world built here rather than one
+ * that happens to be on screen. That is worth more than it sounds: a path tracer's failures
+ * are almost never crashes, they are *plausible wrong pictures*, and the only defence
+ * against a plausible wrong picture is a number that must come out a particular way.
+ */
+private fun pathTracingChecks() {
+    val atlas = Art.buildAtlasPixels()
+
+    /**
+     * A Chunk of nothing, so a test can paint the one thing it cares about into it.
+     *
+     * [Chunk] is a concrete class with a generator in its constructor, so a world built for
+     * a check has to start from real terrain and be overwritten. Doing it by hand rather
+     * than adding a constructor that skips generation would put a test-only path into the
+     * game's own type, and this is the cheaper of the two.
+     */
+    fun blankChunk(cx: Int, cy: Int, cz: Int): Chunk {
+        val chunk = Chunk(cx, cy, cz)
+        for (x in 0 until 16) for (y in 0 until 16) for (z in 0 until 16) {
+            chunk.setBlock(x, y, z, BlockType.AIR)
+        }
+        return chunk
+    }
+
+    fun worldOf(vararg chunks: Chunk) = object : GridWorld {
+        private val byPosition = chunks.associateBy { it.position }
+        override fun existingChunk(cx: Int, cy: Int, cz: Int) = byPosition[Triple(cx, cy, cz)]
+    }
+
+    fun camera(
+        x: Float, y: Float, z: Float,
+        fx: Float, fy: Float, fz: Float,
+        fov: Float = 70f, aspect: Float = 1f
+    ) = Camera(
+        Vector3f(x, y, z), Vector3f(fx, fy, fz), Vector3f(0f, 1f, 0f), fov, aspect
+    )
+
+    fun scene(cam: Camera, daylight: Float = 1f, sun: Vector3f = Vector3f(0.4f, 0.9f, 0.2f)) =
+        TraceScene(cam, sun, daylight)
+
+    /** Traces [size] x [size] pixels [samples] times and returns the mean radiance per pixel. */
+    /**
+     * The colour of one narrow cone of rays, averaged over [samples] of them.
+     *
+     * The narrow field of view is the whole point and it is the thing an earlier version of
+     * this got wrong. A "pixel" is not a point: it is a cone the width of the view divided
+     * by the image, so a 1x1 image through the game's 70-degree lens is the entire screen.
+     * Checks written that way compare two averages over almost the same whole scene, and
+     * they do not fail — they simply cannot tell the thing they were built to tell.
+     */
+    /** Traces [size] x [size] pixels [samples] times and returns the mean radiance per pixel. */
+    fun tracePixels(
+        world: GridWorld, cam: Camera, size: Int = 4, samples: Int = 1,
+        daylight: Float = 1f, sun: Vector3f = Vector3f(0.4f, 0.9f, 0.2f)
+    ): Array<FloatArray> {
+        val tracer = PathTracer(world, atlas, threads = 1)
+        tracer.resize(size, size)
+        repeat(samples) { tracer.sample(scene(cam, daylight, sun)) }
+        return Array(size * size) { index ->
+            // index = row * size + column, and radianceAt takes (x, y) = (column, row). The
+            // two orders are the same only for a square, which is exactly why it went
+            // unnoticed until a check compared the left of an image with the right of it.
+            FloatArray(3).also { tracer.radianceAt(index % size, index / size, it) }
+        }
+    }
+
+    /**
+     * The colour of one narrow cone of rays, averaged over [samples] of them.
+     *
+     * The narrow field of view is the whole point, and it is the thing an earlier version of
+     * this got wrong. A "pixel" is not a point: it is a cone the width of the view divided by
+     * the image, so a 1x1 image through the game's 70-degree lens is the entire screen. Checks
+     * written that way compare two averages over almost the same whole scene, and they do not
+     * fail — they simply cannot tell the thing they were built to tell.
+     */
+    fun conePixels(
+        world: GridWorld, cam: Camera, samples: Int = 1,
+        daylight: Float = 1f, sun: Vector3f = Vector3f(0.4f, 0.9f, 0.2f)
+    ): FloatArray = tracePixels(world, cam, 1, samples, daylight, sun)[0]
+
+    fun luminance(p: FloatArray) = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]
+
+    // --- The Cell walk is exact ---
+
+    println("\n== Path tracing: the Cell walk ==")
+
+    /**
+     * The closed-form distance at which a ray first enters a box, with no stepping in it.
+     *
+     * A Cell *is* an axis-aligned box, so this answer exists and is exact. Which makes the
+     * Cell walk the one part of a renderer with something to be compared against rather
+     * than merely looked at.
+     */
+    fun slabEntry(
+        ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float,
+        min: FloatArray, max: FloatArray
+    ): Float {
+        var tEnter = 0f
+        var tExit = Float.MAX_VALUE
+        for (axis in 0 until 3) {
+            val o = floatArrayOf(ox, oy, oz)[axis]
+            val d = floatArrayOf(dx, dy, dz)[axis]
+            if (kotlin.math.abs(d) < 1e-9f) continue
+            val t1 = (min[axis] - o) / d
+            val t2 = (max[axis] - o) / d
+            tEnter = maxOf(tEnter, minOf(t1, t2))
+            tExit = minOf(tExit, maxOf(t1, t2))
+        }
+        return if (tEnter > tExit) -1f else tEnter
+    }
+
+    val solidChunk = blankChunk(0, 0, 0)
+    // High in the Chunk, deliberately. A ring of rays eight Cells across centred on a low
+    // Cell starts *below* the floor of the world for some directions, and there the tracer
+    // answers BEDROCK — correctly, since that is what stops a ray seeing through the planet.
+    // A check that did not notice that difference would be reporting a failure that is really
+    // a statement about where the test put its camera.
+    solidChunk.setBlock(4, 12, 6, BlockType.STONE)
+    val oneCell = worldOf(solidChunk)
+    val prober = PathTracer(oneCell, atlas, threads = 1)
+    val boxMin = floatArrayOf(4f, 12f, 6f)
+    val boxMax = floatArrayOf(5f, 13f, 7f)
+
+    val centreX = 4.5f; val centreY = 12.5f; val centreZ = 6.5f
+    var compared = 0
+    var worstDistance = 0f
+    var wrongCell = 0
+    for (i in 0 until 36) for (j in 0 until 36) {
+        val theta = (i * 2.0 * Math.PI / 36).toFloat()
+        val phi = (j + 0.5).toFloat() / 36.0f * 2f - 1f
+        val r = kotlin.math.sqrt(1f - phi * phi)
+        val dir = floatArrayOf(r * kotlin.math.cos(theta), phi, r * kotlin.math.sin(theta))
+
+        // Start *behind* the Cell, so the ray travels towards it. Starting along the
+        // direction instead puts the origin on the far side and the ray walks away from
+        // everything — which is the kind of mistake that makes a check report "0 directions"
+        // and read like a pass.
+        val ox = centreX - dir[0] * 8f
+        val oy = centreY - dir[1] * 8f
+        val oz = centreZ - dir[2] * 8f
+
+        val expected = slabEntry(ox, oy, oz, dir[0], dir[1], dir[2], boxMin, boxMax)
+        if (expected <= 0f) continue // aimed away; nothing to compare
+
+        val found = prober.probe(ox, oy, oz, dir[0], dir[1], dir[2])
+        if (!found.hit) { wrongCell++; continue }
+        if (found.x != 4 || found.y != 12 || found.z != 6) { wrongCell++; continue }
+
+        compared++
+        worstDistance = maxOf(worstDistance, kotlin.math.abs(found.t - expected))
+    }
+    println("  $compared directions, worst disagreement ${"%.6f".format(worstDistance)} Cells")
+    check("the Cell walk agrees with closed form on every direction tried",
+        compared > 1200 && wrongCell == 0,
+        "$compared compared, $wrongCell missed or hit the wrong Cell")
+    check("and agrees to well within a thousandth of a Cell",
+        worstDistance < 1e-3f, "worst disagreement was $worstDistance")
+
+    check("a ray that misses the Cell finds nothing", run {
+        // Straight up, in a column with no stone in it. Straight up from *under* the Cell
+        // would go straight through it, which is the opposite of what is being claimed.
+        val away = prober.probe(2.5f, 1.5f, 2.5f, 0f, 1f, 0f)
+        !away.hit
+    })
+    check("a ray starting inside a Cell is stopped there", run {
+        // The starting Cell is the answer, at distance zero. Anything else is a walk that
+        // has stepped past the geometry it is standing in.
+        val inside = prober.probe(4.5f, 12.5f, 6.5f, 1f, 0f, 0f)
+        inside.hit && inside.t == 0f
+    })
+    check("the face a ray enters through points back at it", run {
+        // Entering the Cell from -X means the face is its WEST one, and the reported face
+        // is what decides the Tile and which way the surface faces. A face chosen wrongly
+        // lights a wall from the wrong side and gives it the wrong art, silently.
+        val fromWest = prober.probe(-2.5f, 12.5f, 6.5f, 1f, 0f, 0f)
+        fromWest.face == 4
+    })
+
+    // --- A Cutout is a hole, not a surface ---
+
+    println("\n== Path tracing: leaves are see-through ==")
+
+    /**
+     * Which art pixels of the Leaves Tile are holes, read from the art itself.
+     *
+     * Not assumed. The art is the authority on where its own holes are, and a check that
+     * hard-coded "row 3 is a hole" would keep passing after someone redrew the tile.
+     */
+    /**
+     * The alpha of one point on the Leaves Tile, in the same 0..1 coordinates the tracer
+     * itself uses. Taking normalised coordinates rather than art-pixel indices is the point:
+     * a version of this took indices, multiplied them by 16, clamped everything to the last
+     * pixel, and reported that the Leaves art had no holes in it at all.
+     */
+    fun leafAlpha(u: Float, v: Float): Int {
+        val ax = (u * Atlas.ART_PX).toInt().coerceIn(0, Atlas.ART_PX - 1)
+        val ay = (v * Atlas.ART_PX).toInt().coerceIn(0, Atlas.ART_PX - 1)
+        val ox = Atlas.LEAVES.tx * Atlas.TILE_PX + Atlas.PAD + ax * Atlas.UPSCALE
+        val oy = Atlas.LEAVES.ty * Atlas.TILE_PX + Atlas.PAD + ay * Atlas.UPSCALE
+        val size = Atlas.TILES * Atlas.TILE_PX
+        return (atlas[oy * size + ox] ushr 24) and 0xFF
+    }
+
+    /**
+     * One tracer reused for many single-pixel questions.
+     *
+     * Not an optimisation: [PathTracer] owns a thread pool, and building one per probe would
+     * leave a hundred idle threads behind by the end of this function. The reset between
+     * questions is what makes reusing it correct — each is asked of a different ray, and
+     * averaging two of them would answer neither.
+     */
+    class SinglePixel(val world: GridWorld) {
+        private val tracer = PathTracer(world, atlas, threads = 1)
+
+        init {
+            tracer.resize(1, 1)
+        }
+
+        fun pixel(cam: Camera, samples: Int = 4): FloatArray {
+            tracer.reset()
+            repeat(samples) { tracer.sample(scene(cam)) }
+            return FloatArray(3).also { tracer.radianceAt(0, 0, it) }
+        }
+    }
+
+    val leavesChunk = blankChunk(0, 0, 0)
+    // A leaf at the near Cell, STONE behind it, and the camera square in front of both.
+    leavesChunk.setBlock(4, 5, 4, BlockType.LEAVES)
+    leavesChunk.setBlock(4, 5, 5, BlockType.STONE)
+    val leavesWorld = worldOf(leavesChunk)
+
+    val hole = (0 until Atlas.ART_PX).flatMap { ay ->
+        (0 until Atlas.ART_PX).mapNotNull { ax ->
+            if (leafAlpha((ax + 0.5f) / Atlas.ART_PX, (ay + 0.5f) / Atlas.ART_PX) < 128) ax to ay else null
+        }
+    }
+    val solid = (0 until Atlas.ART_PX).flatMap { ay ->
+        (0 until Atlas.ART_PX).mapNotNull { ax ->
+            if (leafAlpha((ax + 0.5f) / Atlas.ART_PX, (ay + 0.5f) / Atlas.ART_PX) >= 128) ax to ay else null
+        }
+    }
+    check("the Leaves Tile really does have holes in it", hole.isNotEmpty(),
+        "found ${hole.size} transparent art pixels of 256")
+    check("and really does have solid parts in it", solid.isNotEmpty(),
+        "found ${solid.size} opaque art pixels")
+
+    /**
+     * Fires one ray at the middle of one art pixel of the leaf's front face, and reports
+     * what came back. Returns true if the STONE behind the leaf was the thing found.
+     *
+     * The lens is 0.2 degrees, which at two and a half Cells is about a fortieth of a Cell —
+     * well inside the quarter-Cell an art pixel occupies. A wider one and each sample lands
+     * on whatever art pixel its jitter happened to reach, so the check ends up measuring the
+     * neighbours of the pixel it named.
+     */
+    val leafProbe = SinglePixel(leavesWorld)
+    fun passesThroughLeaf(artX: Int, artY: Int): Boolean {
+        // The leaf's NORTH face (normal -Z) is being looked at from -Z, and on that face
+        // faceUV says u = 1 - a, v = b. Solved backwards for the point on the face that
+        // lands on (artX, artY): a = 1 - u, b = v.
+        val u = (artX + 0.5f) / Atlas.ART_PX
+        val v = (artY + 0.5f) / Atlas.ART_PX
+        val targetX = 4f + (1f - u)
+        val targetY = 5f + v
+        val targetZ = 4f
+
+        val from = Vector3f(targetX, targetY, 1.5f)
+        val at = Vector3f(targetX, targetY, targetZ)
+        val dir = Vector3f(at).sub(from).normalize()
+
+        val seen = leafProbe.pixel(
+            camera(from.x, from.y, from.z, dir.x, dir.y, dir.z, fov = 0.2f), samples = 12
+        )
+        // STONE is grey and very nearly colourless; LEAVES is green. Which of the two came
+        // back is the question, and it is answerable without reaching into anything private.
+        val greenness = seen[1] / maxOf(seen[0], seen[2], 1e-4f)
+        return greenness < 1.15f
+    }
+
+    if (hole.isNotEmpty() && solid.isNotEmpty()) {
+        check("a hole in a leaf lets the ray through to what is behind it",
+            passesThroughLeaf(hole[0].first, hole[0].second), "the leaf stopped it anyway")
+        check("solid art in a leaf stops the ray",
+            !passesThroughLeaf(solid[0].first, solid[0].second), "the ray went through solid art")
+        // Several of each, because a single pair would also pass if the tracer were
+        // ignoring the Tile entirely and getting the right answer by accident.
+        val holesThrough = hole.filter { passesThroughLeaf(it.first, it.second) }.size
+        val solidsThrough = solid.count { passesThroughLeaf(it.first, it.second) }
+        check("every hole in the leaf is a hole in the light too",
+            holesThrough == hole.size, "$holesThrough of ${hole.size} holes let a ray through")
+        check("no solid art pixel in the leaf is a hole",
+            solidsThrough == 0, "$solidsThrough of ${solid.size} solid pixels let a ray through")
+    }
+
+    // --- Light is light ---
+
+    println("\n== Path tracing: light ==")
+
+    /**
+ * A room with a ceiling that has one hole in it, and nothing above that ceiling.
+ *
+ * The shape matters. A pillar outdoors casts a shadow, but the shadowed side is still lit
+ * by the sky, so the ratio between the two is a few percent and any assertion about it is
+ * really an assertion about how bright the sky happens to be. Put the Sun overhead and roof
+ * the room, and the hole is the *only* way light gets in at all.
+ *
+ * The ceiling is the top, and that clause is load-bearing. An earlier version also walled
+ * the Chunk at y=15, so the gap let light in to a second ceiling fourteen Cells above it,
+ * both spots under it were equally dark, and the check could not tell a working shadow ray
+ * from a broken one.
+ */
+    fun roofedRoom(): GridWorld {
+        val chunk = blankChunk(0, 0, 0)
+        for (y in 0 until 16) for (x in 0 until 16) for (z in 0 until 16) {
+            val wall = x == 0 || x == 15 || z == 0 || z == 15 || y == 0
+            chunk.setBlock(x, y, z, if (wall) BlockType.STONE else BlockType.AIR)
+        }
+        // A ceiling, with a single gap in it.
+        for (x in 1..14) for (z in 1..14) chunk.setBlock(x, 8, z, BlockType.STONE)
+        chunk.setBlock(8, 8, 8, BlockType.AIR)
+        return worldOf(chunk)
+    }
+
+    val overhead = Vector3f(0.05f, 1f, 0.02f).normalize()
+
+    /**
+     * Looking straight down at one spot of floor, through a lens narrow enough that the
+     * sub-pixel jitter stays inside the Cell being asked about. The Sun is overhead, because
+     * the whole point of this shape of room is that the hole is the only way light gets in.
+     */
+    fun downCamera(x: Float, z: Float, height: Float = 3.5f) =
+        camera(x, height, z, 0f, -1f, 0f, fov = 2f)
+
+    val underHole = conePixels(roofedRoom(), downCamera(8.5f, 8.5f), 300, sun = overhead)
+    val underRoof = conePixels(roofedRoom(), downCamera(3.5f, 3.5f), 300, sun = overhead)
+    val holeLevel = luminance(underHole)
+    val roofLevel = luminance(underRoof)
+    println("  floor under the gap $holeLevel, floor under the roof $roofLevel")
+    check("a hole in a roof lets the Sun through to the floor",
+        holeLevel > roofLevel * 5 && holeLevel > 0.02f,
+        "under the gap $holeLevel, under the roof $roofLevel")
+    check("and the roof itself really does cast a shadow",
+        roofLevel < 0.01f, "the floor under the roof reads $roofLevel")
+
+    /**
+ * A sealed room, optionally with a slab of GLOWSTONE in one wall.
+ *
+ * This is the claim the whole renderer rests on: that light gets into a closed box without
+ * any of it being *put* there. Nothing computes a level for that Cell and stores it — a ray
+ * leaves the emitter, crosses the room, and lands on the floor.
+ *
+ * The emitter is a slab rather than one Cell because of how this light is currently found:
+ * a bounce has to *hit* an emitter by chance, and a single Cell subtends about a degree from
+ * across a room. A hundred samples would then be measuring the luck of the draw rather than
+ * the physics. That is a real property of the renderer and it is stated where it is asserted
+ * — the fix is an emitter index and direct sampling, not a smaller test.
+ */
+    fun sealedRoom(emissive: Boolean): GridWorld {
+        val chunk = blankChunk(0, 0, 0)
+        for (x in 0 until 16) for (y in 0 until 16) for (z in 0 until 16) {
+            val shell = x == 0 || x == 15 || y == 0 || y == 15 || z == 0 || z == 15
+            chunk.setBlock(x, y, z, if (shell) BlockType.STONE else BlockType.AIR)
+        }
+        if (emissive) for (x in 4..7) for (y in 4..7) chunk.setBlock(x, 4, 1, BlockType.GLOWSTONE)
+        return worldOf(chunk)
+    }
+
+    val darkRoom = conePixels(sealedRoom(false), downCamera(10.5f, 10.5f, 6.5f), 400)
+    val litRoom = conePixels(sealedRoom(true), downCamera(10.5f, 10.5f, 6.5f), 400)
+    println("  sealed room without an emitter ${luminance(darkRoom)}, with one ${luminance(litRoom)}")
+    check("a sealed room with no emitter in it is exactly dark",
+        luminance(darkRoom) < 1e-6f, "it reads ${luminance(darkRoom)}")
+    check("a glowing block lights a sealed room from the inside",
+        luminance(litRoom) > luminance(darkRoom) * 100 && luminance(litRoom) > 0.001f,
+        "dark ${luminance(darkRoom)}, lit ${luminance(litRoom)}")
+
+    // --- The image is an image ---
+
+    println("\n== Path tracing: the picture ==")
+
+    /**
+     * A wall with a green panel on its left and a warm one on its right.
+     *
+     * A mirrored image is the classic path-tracer bug and it is invisible in a picture of
+     * natural terrain — nearly everything in this game is the same colour. So the scene is
+     * asymmetric on purpose, and the markers are panels rather than single Cells: at twenty
+     * Cells away one Cell is a degree and a half of view, which is *narrower than one pixel*
+     * of the check's own image, and a marker that thin measures the jitter rather than the
+     * thing it was put there to measure.
+     */
+    val sceneChunk = blankChunk(0, 0, 0)
+    for (y in 0 until 16) for (x in 0 until 16) sceneChunk.setBlock(x, y, 0, BlockType.STONE)
+    for (x in 2..6) for (y in 6..10) sceneChunk.setBlock(x, y, 1, BlockType.LEAVES)
+    for (x in 11..15) for (y in 6..10) sceneChunk.setBlock(x, y, 1, BlockType.GLOWSTONE)
+    val sceneWorld = worldOf(sceneChunk)
+
+    val pixels = 32
+    val image = tracePixels(sceneWorld, camera(8.5f, 8.5f, 20f, 0f, 0f, -1f), pixels, 150)
+    fun greennessAt(index: Int): Float {
+        val p = image[index]
+        // Green relative to the *brightest* of red and blue, not to red. Dividing by red
+        // alone rates a blue sky as green, which is exactly backwards — an earlier version
+        // of this check did that and reported the Leaves panel as barely tinted.
+        return p[1] / maxOf(p[0], p[2], 1e-4f)
+    }
+
+    // Left half against right half, which needs no arithmetic about where anything projects to.
+    //
+    // A hard-coded column number is a guess about the projection, and the earlier versions of
+    // this check kept needing one: first a column that averaged mostly open sky, then a
+    // panel whose bounds were computed and still landed beside it. Halves of the image are
+    // defined by the image itself and cannot drift from it.
+    val half = pixels / 2
+    val leftColumn = (0 until pixels / 2).flatMap { c ->
+        (0 until pixels).map { r -> greennessAt(r * pixels + c) }
+    }.average()
+    val rightColumn = (half until pixels).flatMap { c ->
+        (0 until pixels).map { r -> greennessAt(r * pixels + c) }
+    }.average()
+    println("  greenness on the left $leftColumn, on the right $rightColumn")
+    check("the world is not mirrored left to right", leftColumn > rightColumn * 1.15,
+        "greenness on the left $leftColumn, on the right $rightColumn — the image is flipped")
+
+    var finite = true
+    var nonNegative = true
+    for (i in 0 until pixels * pixels) {
+        for (c in 0 until 3) {
+            val v = image[i][c]
+            if (!v.isFinite()) finite = false
+            if (v < 0f) nonNegative = false
+        }
+    }
+    check("no pixel of a traced frame is NaN or infinite", finite)
+    check("no pixel of a traced frame is negative", nonNegative)
+
+    val film = run {
+        val tracer = PathTracer(sceneWorld, atlas, threads = 1)
+        tracer.resize(8, 8)
+        repeat(3) { tracer.sample(scene(camera(8.5f, 8.5f, 20f, 0f, 0f, -1f))) }
+        tracer.rgba()
+    }
+    check("the film produces one opaque RGBA byte per pixel", run {
+        // Alpha is the fourth byte, not the first — reading every fourth byte from zero
+        // reads red, which is a picture and therefore never a constant.
+        film.size == 8 * 8 * 4 && film.indices.step(4).all { film[it + 3] == 255.toByte() }
+    })
+
+    // --- Accumulation is an average ---
+
+    println("\n== Path tracing: accumulation ==")
+    val counting = PathTracer(sceneWorld, atlas, threads = 1)
+    counting.resize(4, 4)
+    check("nothing has been drawn yet", counting.sampleCount == 0)
+    counting.sample(scene(camera(8.5f, 8.5f, 20f, 0f, 0f, -1f)))
+    check("one sample has been drawn", counting.sampleCount == 1)
+    counting.reset()
+    check("resetting empties the average", counting.sampleCount == 0)
+
+    check("tracing the same scene twice gives the same picture", run {
+        fun picture(): ByteArray {
+            val tracer = PathTracer(sceneWorld, atlas, threads = 1)
+            tracer.resize(8, 8)
+            repeat(4) { tracer.sample(scene(camera(8.5f, 8.5f, 20f, 0f, 0f, -1f))) }
+            return tracer.rgba()
+        }
+        picture().contentEquals(picture())
+    })
+
+    check("more threads give the same answer as one", run {
+        // Each band writes only its own pixels, so the threads cannot be interfering. If
+        // they are, this is where it shows — and it would show as a picture that is right
+        // on one machine and speckled on another.
+        fun picture(threads: Int): ByteArray {
+            val tracer = PathTracer(sceneWorld, atlas, threads = threads)
+            tracer.resize(16, 16)
+            repeat(3) { tracer.sample(scene(camera(8.5f, 8.5f, 20f, 0f, 0f, -1f))) }
+            return tracer.rgba()
+        }
+        picture(1).contentEquals(picture(4))
+    })
+
+    // --- Cost, measured ---
+
+    val started = System.nanoTime()
+    val perf = PathTracer(sceneWorld, atlas, threads = 1)
+    perf.resize(64, 64)
+    repeat(4) { perf.sample(scene(camera(8.5f, 8.5f, 20f, 0f, 0f, -1f))) }
+    val perSample = (System.nanoTime() - started) / 4.0 / (64 * 64)
+    println("  one thread: ${"%.0f".format(perSample / 1000.0)} us per pixel-sample")
+    // A path tracer is allowed to be slow. It is not allowed to be *unknown* slow, and a
+    // regression that quietly doubles the cost of a Cell walk would not show up as a
+    // failure anywhere else in this file.
+    check("a pixel costs under 200 microseconds on one thread", perSample < 200_000,
+        "was ${"%.0f".format(perSample / 1000.0)} us")
 }

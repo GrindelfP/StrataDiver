@@ -42,6 +42,8 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 | File | Purpose |
 |------|---------|
 | `StrataDiver.kt` | The entry point (`fun main()`, hence JVM class `StrataDiverKt` in `pom.xml`) *and* the game: window/GL lifecycle, frame order, input routing, entity tick + pickup, break/place (class `StrataDiver`, enum `ControlMode`). No separate Main file exists. |
+| `PathTracer.kt` | The renderer: `Camera`, `TraceScene`, `PathTracer`, `RayHit`, `GridWorld`. Pure Kotlin, no GL. Averages one sample per pixel per frame over rays through the Cells, with the Sun and Moon sampled as area lights, the sky sampled as a direction-dependent model, and MIS splitting the sky between direct lighting and escaping bounces. `F` swaps it for the rasterizer. |
+| `TracedImage.kt` | Puts a finished traced frame on the screen: one texture, one quad, one shader that only copies. |
 | `ShaderProgram.kt` | Compiles/links the program; resolves every uniform location **once** and sets it by name |
 | `Geometry.kt` | `Mesh` (vao+vbo+count, released together), `Geometry.upload()`, and the static shapes `UNIT_QUAD`/`UNIT_CUBE`/`SELECTION_BOX`/`MINIMAP_QUAD` |
 | `ChunkStreamer.kt` | Which Chunks exist (`chunks`), which hold GPU memory (`meshed`), block read/write, streaming (interface `SolidWorld`). `setBlock` re-meshes any Chunk sharing a face with the changed Cell, not just those whose light changed |
@@ -68,6 +70,7 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 - **Terrain**: Perlin noise → height map. Sea level at Y=128. Layers: bedrock → stone → dirt → grass.
 - **Meshing**: Face-culling by opacity — a face is drawn unless its neighbour is opaque. Vertex format: 3 pos + 2 UV + 3 normal = **8 floats per vertex**.
 - **Textures**: Procedurally generated 256×256 atlas (4×4 tiles of 64px). Block tiles: grass, dirt, stone, bedrock, wood, leaves. UI tiles: slot frame, selected-slot, panel, crosshair, plus `Atlas.LINE` — opaque white, for wireframes and the FPS font, which must survive the alpha cutout.
+- **Rendering**: The world is drawn by **path tracing** — a progressive average of rays, not by rasterizing chunk meshes. One sample per pixel per frame; move or change the world and it starts again. Resolution adapts to a *measured* frame cost. Cutouts (leaves) are honoured by the ray itself, so a hole in a leaf is a hole in its shadow. Aerial perspective is the sky's own radiance, applied only where the sky reaches. **The old rasterizer is still present behind `F`** — parked pending sign-off on how the tracer's look reads in a window, because until then the tracer's appearance is unverified.
 - **Control routing**: All input (per-frame polling, key callback, mouse move, mouse click) routes through a `ControlMode` — `GAMEPLAY` or `INTERACTIVE`. `INTERACTIVE` is active whenever a GUI layer is open (inventory now, escape menu later): gameplay keys are unassigned, the player is frozen, and mouse clicks drive the UI.
 - **GUI**: Flat 2D screen-space quads in an orthographic pass after the 3D world, all through `UiPass`. The hotbar is always-on; the inventory (E) shows a 3×9 grid above it on a Panel. Slots accept clicks (pick up / move / stack via the cursor-held item).
 - **Minimap**: 208px disc, top-right, north-up, 64 Cells across. `Minimap` holds one
