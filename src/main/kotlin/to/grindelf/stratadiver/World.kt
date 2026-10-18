@@ -679,9 +679,13 @@ object MeshGenerator {
                 day += Light.day(l); torch += Light.torch(l); open++
             }
 
-            // A corner with no Cells to average (all four in missing Chunks) reads as fully
-            // lit rather than fully dark: the absence of evidence is not evidence of dark.
-            if (open == 0) open = 1
+            // A corner with no Cells to average (all four in missing Chunks) inherits the
+            // light of the Cell it belongs to, which always exists. Without this the vertex
+            // would read as fully dark and the face would render black at every frontier.
+            if (open == 0) {
+                val l = world.lightAt(base[0], base[1], base[2])
+                day = Light.day(l); torch = Light.torch(l); open = 1
+            }
 
             into[index * 3] = shade.toFloat()
             into[index * 3 + 1] = day * LIGHT_SCALE / open

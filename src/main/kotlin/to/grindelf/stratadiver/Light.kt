@@ -108,21 +108,26 @@ class LightEngine(private val world: LitWorld) {
         // --- Daylight ---
         //
         // Walk each Column from the ceiling of the *world* — not the ceiling of this Chunk
-        // — down, and every Cell nothing opaque stands above is in full daylight. A layer
-        // the streamer has not made reads as open, so a frontier Chunk is lit by what is
-        // actually above it rather than going dark along the seam.
+        // — down, tracking how much daylight survives the passage. An opaque Block Type
+        // blocks it outright; an attenuating one (leaves, by default) dims it by its
+        // attenuation value. A layer the streamer has not made reads as open, so a
+        // frontier Chunk is lit by what is actually above it rather than going dark along
+        // the seam.
         for (lx in 0 until Chunk.SIZE) {
             for (lz in 0 until Chunk.SIZE) {
-                var openToSky = true
+                var daylight = Light.MAX
                 for (cy in Chunk.HEIGHT_LAYERS - 1 downTo chunk.yOffset) {
                     val layer = layers[cy] ?: continue
                     val mine = cy == chunk.yOffset
                     for (ly in Chunk.SIZE - 1 downTo 0) {
-                        val opaque = BlockType.getById(layer.getBlock(lx, ly, lz)).opaque
-                        if (opaque) {
-                            openToSky = false
-                        } else if (mine && openToSky) {
-                            chunk.setPackedLight(lx, ly, lz, Light.pack(Light.MAX, Light.DARK))
+                        val type = BlockType.getById(layer.getBlock(lx, ly, lz))
+                        if (type.opaque) {
+                            daylight = 0
+                        } else {
+                            daylight = (daylight - type.attenuation).coerceAtLeast(0)
+                            if (mine) {
+                                chunk.setPackedLight(lx, ly, lz, Light.pack(daylight, Light.DARK))
+                            }
                         }
                     }
                 }
