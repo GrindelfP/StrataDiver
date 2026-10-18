@@ -1837,4 +1837,47 @@ private fun pathTracingChecks() {
     // failure anywhere else in this file.
     check("a pixel costs under 200 microseconds on one thread", perSample < 200_000,
         "was ${"%.0f".format(perSample / 1000.0)} us")
+
+    // --- The film, measured separately ---
+    //
+    // `rgba()` sits *outside* the window `drawTracedWorld` measures as the frame's trace
+    // cost, so the adaptive resolution controller has never seen it. That is the kind of
+    // thing that is easy to assert is expensive and hard to prove, so it is measured here
+    // rather than argued about: the film is three `exp` and three `pow` per pixel per
+    // channel on one thread, and at the resolution the tracer actually runs at, that is
+    // either a rounding error or a third of the frame.
+    //
+    // The figure is per pixel of output, so it can be multiplied by whatever resolution the
+    // game settles on without re-running this.
+    val filmTracer = PathTracer(sceneWorld, atlas, threads = 1)
+    filmTracer.resize(128, 128)
+    filmTracer.sample(scene(camera(8.5f, 8.5f, 20f, 0f, 0f, -1f)))
+    filmTracer.rgba() // warm the JIT, so the number below is the film and not the compiler
+
+    //
+    // The result is consumed, and that is the whole subtlety: `rgba()` allocates and
+    // returns a ByteArray, and an allocation whose result is thrown away does not escape,
+    // so the JIT is entitled to delete the entire computation and leave a loop that times
+    // almost nothing. The first version of this measured 0.2 ns a pixel — which is not a
+    // film, it is the loop — and printed it beside a 161 ms figure derived from the same
+    // number. Two answers from one measurement is the signature that the measurement is
+    // wrong, so the two are now derived from one place and the bytes are read back.
+    val sink = java.util.concurrent.atomic.AtomicInteger(0)
+    val filmStarted = System.nanoTime()
+    val frames = 20
+    repeat(frames) { sink.addAndGet(filmTracer.rgba()[0].toInt()) }
+    val perFilmPixel = (System.nanoTime() - filmStarted) / 1e9 / frames / (128.0 * 128.0)
+
+    val msAt = { w: Int, h: Int -> "%.1f".format(perFilmPixel * w * h * 1000) }
+    val nsPerPixel = "%.0f".format(perFilmPixel * 1e9)
+    println("  film: $nsPerPixel ns per pixel, one thread (sink ${sink.get()})")
+    println("    at 1280x720 that is ${msAt(1280, 720)} ms per frame")
+    println("    at  640x360 that is ${msAt(640, 360)} ms per frame")
+
+    // The budget is what the game gives the whole frame. A film that costs a meaningful
+    // share of it on the main thread, with nothing else on that thread able to overlap it,
+    // is not a rounding error. This is measured rather than asserted because it was
+    // asserted first and nobody knows which of us was right.
+    check("the film costs under 100 ns per pixel", perFilmPixel < 100e-9,
+        "was $nsPerPixel ns per pixel, ${msAt(1280, 720)} ms a frame at 1280x720")
 }

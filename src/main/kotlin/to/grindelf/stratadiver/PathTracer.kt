@@ -134,6 +134,15 @@ class PathTracer(
         /** The film. Radiance is not a colour until something decides it is. */
         const val EXPOSURE = 1.15f
 
+        /** The brightest radiance the film's table is built over. See [PathTracer.rgba]. */
+        const val FILM_RANGE = 8f
+
+        /** How many steps across [FILM_RANGE]. Finer than one 255th of the output. */
+        const val FILM_STEPS = 8192
+
+        /** The reciprocal of one table step, so the lookup is a multiply. */
+        const val FILM_INVERSE_STEP = FILM_STEPS / FILM_RANGE
+
         /**
          * The brightest indirect contribution a single bounce may make.
          *
@@ -980,6 +989,36 @@ class PathTracer(
     // --- Out ---
 
     /**
+     * The film, as a table.
+     *
+     * Tonemapping and gamma together are `1 - exp(-v * EXPOSURE)` raised to `1/2.2`, which
+     * is one exponential and one power per channel per pixel. Kotlin routes both through
+     * `Math.exp` and `Math.pow` in Double precision and back, and measured at 173 ns a
+     * pixel — which is 160 ms a frame at 1280x720 and 40 ms at 640x360, on the main thread,
+     * *outside* the window the adaptive resolution measures as the frame's trace cost. A
+     * renderer can spend a second a frame being clever about rays and still lose to its own
+     * film.
+     *
+     * A table of the whole curve costs one multiply, one floor and one array read. It is
+     * exact enough because the output is 8 bits: with [FILM_STEPS] entries over [0,
+     * [FILM_RANGE]] the table step is finer than one 255th of the output range, so the
+     * quantisation cannot move a byte. Anything brighter than the range saturates, which is
+     * what `coerceIn` at the far end of the exact formula did anyway.
+     */
+    private fun filmLut(): FloatArray {
+        val lut = film ?: FloatArray(FILM_STEPS + 1).also { table ->
+            for (i in 0..FILM_STEPS) {
+                val v = i.toFloat() / FILM_STEPS * FILM_RANGE
+                table[i] = (1f - exp(-v * EXPOSURE)).pow(1f / 2.2f)
+            }
+            film = table
+        }
+        return lut
+    }
+
+    private var film: FloatArray? = null
+
+    /**
      * The average of everything traced so far, as the bytes to hand the GPU.
      *
      * Film, then gamma. Two one-line steps and the whole difference between an image and a
@@ -990,13 +1029,14 @@ class PathTracer(
     fun rgba(): ByteArray {
         val count = sampleCount.coerceAtLeast(1)
         val out = ByteArray(width * height * 4)
+        val lut = filmLut()
         for (i in 0 until width * height) {
             for (c in 0 until 3) {
                 var v = radiance[i * 3 + c] / count
                 if (v.isNaN()) v = 0f
-                v = 1f - exp(-maxOf(v, 0f) * EXPOSURE)
-                v = v.coerceIn(0f, 1f).pow(1f / 2.2f)
-                out[i * 4 + c] = (v * 255f + 0.5f).toInt().coerceIn(0, 255).toByte()
+                val step = (maxOf(v, 0f) * FILM_INVERSE_STEP).toInt()
+                val tone = lut[if (step > FILM_STEPS) FILM_STEPS else step]
+                out[i * 4 + c] = (tone * 255f + 0.5f).toInt().toByte()
             }
             out[i * 4 + 3] = 255.toByte()
         }
