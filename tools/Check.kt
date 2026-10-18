@@ -648,21 +648,14 @@ fun main() {
     /**
      * Daylight in a room lit only through a shaft bored at x=8, z=8 through the roof.
      *
-     * Two rules, and the second surprises people:
-     *
-     *  - Light spreads to six neighbours at once, so travelling from the shaft to a Cell
-     *    costs the *sum* of the offsets, not the greatest of them. Writing this as a
-     *    maximum is the mistake that makes a whole room look wrong in a test while the
-     *    engine is right.
-     *  - Height does not appear at all, because the shaft is bored through the whole roof
-     *    and so lights an entire Column. Every Cell of that Column is at full daylight by
-     *    the sky rule before any spreading happens, and each layer of the room is then lit
-     *    sideways from its own shaft Cell. A room lit through a single *hole* rather than
-     *    a whole Column would fall off with depth as well; that is a different test.
+     * Ray tracing gives exact line-of-sight: a Cell is lit by daylight if and only if a
+     * ray cast straight up from it reaches the sky without striking an opaque Block Type.
+     * The shaft Column (x=8, z=8) is open to the sky, so every Cell in it is at full
+     * daylight. Every other Cell in the room has stone above it, so the ray stops there
+     * and the Cell is in shadow.
      */
     fun daylightUnderShaft(x: Int, y: Int, z: Int): Int =
-        if (x == 8 && z == 8) Light.MAX
-        else (Light.MAX - kotlin.math.abs(x - 8) - kotlin.math.abs(z - 8)).coerceAtLeast(0)
+        if (x == 8 && z == 8) Light.MAX else Light.DARK
 
     /** How many Cells of a box hold a daylight level other than the one expected. */
     fun LitFixture.countWrong(expected: (Int, Int, Int) -> Int): Int {
@@ -715,19 +708,10 @@ fun main() {
         check("daylight falls a Column at full strength", (0..15).none { f.day(8, it, 8) != Light.MAX }) {
             "cells at ${(0..15).filter { f.day(8, it, 8) != Light.MAX }} were not full"
         }
-        check("away from the shaft, light costs one level per Cell travelled",
-            (0 until 16).all { f.day(it, 15, 8) == daylightUnderShaft(it, 15, 8) }) {
-            "row y=15 is ${(0 until 16).map { f.day(it, 15, 8) }}"
-        }
-        check("diagonal travel costs two steps, not one", f.day(9, 15, 9) == 13, "got ${f.day(9, 15, 9)}")
-        check("and the whole 16x16x16 room matches that rule", f.countWrong(::daylightUnderShaft) == 0) {
+        check("the rest of the room is in shadow", f.countWrong(::daylightUnderShaft) == 0) {
             "${f.countWrong(::daylightUnderShaft)} Cells differ"
         }
-        check("a Column shaft lights the room the same at every depth",
-            (0..15).all { y -> (0..15).all { z -> f.day(0, y, z) == f.day(0, 15, z) } }) {
-            "the room is lit per-layer from its shaft Column, so depth does not enter"
-        }
-        check("the roof is opaque to it", f.day(8, 16, 0) == Light.DARK)
+        check("the roof above the room is dark", f.day(8, 16, 0) == Light.DARK)
         check("open sky above the roof is untouched", f.day(8, 32, 8) == Light.MAX)
     }
 
@@ -740,10 +724,13 @@ fun main() {
 
         // A single Cell of emission, so the falloff is three-dimensional: unlike a shaft,
         // there is no Column of it to light the room evenly from top to bottom.
-        fun expected(x: Int, y: Int, z: Int) =
-            (BlockType.GLOWSTONE.emission -
-                    (kotlin.math.abs(x - 8) + kotlin.math.abs(y - 15) + kotlin.math.abs(z - 8)))
-                .coerceAtLeast(0)
+        fun expected(x: Int, y: Int, z: Int): Int {
+            val dx = (x - 8).toDouble()
+            val dy = (y - 15).toDouble()
+            val dz = (z - 8).toDouble()
+            val dist = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz).toInt()
+            return (BlockType.GLOWSTONE.emission - dist).coerceAtLeast(0)
+        }
 
         check("the emitter sits at its own level", f.torch(8, 15, 8) == BlockType.GLOWSTONE.emission)
         check("one step sideways costs one", f.torch(9, 15, 8) == 13, "got ${f.torch(9, 15, 8)}")
@@ -766,7 +753,7 @@ fun main() {
                     "middle (8,8,8) expected ${expected(8, 8, 8)} got ${f.torch(8, 8, 8)}"
         }
         check("no daylight gets in, because the room is sealed", f.day(8, 8, 8) == 0)
-        check("and the roof does not glow from inside it", f.torch(8, 16, 8) == 0)
+        check("the roof stone is in shadow", f.day(8, 16, 8) == Light.DARK)
     }
 
     println("\n== Light: leaves dim what passes through them ==")
@@ -788,9 +775,13 @@ fun main() {
         check("leaves do not stop light outright", leafy.torch(8, 12, 8) > 0)
         check("what gets through is dimmer, not absent",
             leafy.torch(8, 12, 8) in 1 until bare.torch(8, 12, 8))
-        check("a leaf is lit too, so a canopy glows from within",
-            leafy.torch(8, 14, 8) == BlockType.GLOWSTONE.emission - 2) {
-            "got ${leafy.torch(8, 14, 8)}, expected ${BlockType.GLOWSTONE.emission - 2}"
+        check("a leaf one step from the emitter is lit by it",
+            leafy.torch(8, 14, 8) == BlockType.GLOWSTONE.emission - 1) {
+            "got ${leafy.torch(8, 14, 8)}, expected ${BlockType.GLOWSTONE.emission - 1}"
+        }
+        check("a leaf two steps away is dimmed by the leaf between",
+            leafy.torch(8, 13, 8) == BlockType.GLOWSTONE.emission - 3) {
+            "got ${leafy.torch(8, 13, 8)}, expected ${BlockType.GLOWSTONE.emission - 3}"
         }
     }
 
@@ -865,6 +856,39 @@ fun main() {
         f.change(8, 20, 8, BlockType.AIR)        // open it again
         check("reopening it restores every Cell exactly", litWrong() == 0) { "${litWrong()} Cells differ" }
         check("and the shaft itself is full daylight again", f.day(8, 0, 8) == Light.MAX)
+    }
+
+    println("\n== Light: capping a deep shaft darkens it to the floor ==")
+    // Daylight is vertical, so a change at the mouth of a Column reaches every Cell below
+    // it — however far down that is. A change that re-lit only the 3x3x3 of Chunks around
+    // itself would leave the floor of a deep pit glowing after its mouth was sealed, and
+    // the floor is more than one Chunk below the seal. This is that case, as numbers.
+    run {
+        val f = LitFixture(rx = 0, ry = 4, rz = 0)      // one Chunk Column of four, y 0..63
+        f.world.fill(0, 0, 0, 15, 63, 15, BlockType.STONE)
+        f.world.fill(8, 0, 8, 8, 63, 8, BlockType.AIR)  // a 1x1 shaft bored to the sky
+        f.lightEverything()
+
+        check("an open shaft is lit all the way down", (0..63).all { f.day(8, it, 8) == Light.MAX }) {
+            "cells at ${(0..63).filter { f.day(8, it, 8) != Light.MAX }} were not full"
+        }
+
+        // Seal the mouth at the very top, three Chunks above the floor.
+        f.change(8, 63, 8, BlockType.STONE)
+        check("sealing its mouth darkens the floor, three Chunks below",
+            f.day(8, 0, 8) == Light.DARK) {
+            "got ${f.day(8, 0, 8)} — the floor was not re-derived"
+        }
+        check("and every Cell beneath the seal with it",
+            (0..62).all { f.day(8, it, 8) == Light.DARK }) {
+            "cells at ${(0..62).filter { f.day(8, it, 8) != Light.DARK }} stayed lit"
+        }
+
+        f.change(8, 63, 8, BlockType.AIR)
+        check("opening it again restores the whole Column",
+            (0..63).all { f.day(8, it, 8) == Light.MAX }) {
+            "cells at ${(0..63).filter { f.day(8, it, 8) != Light.MAX }} stayed dark"
+        }
     }
 
     println("\n== Light: putting the light back gives back exactly the light you took ==")
@@ -992,10 +1016,9 @@ fun main() {
             for (dy in 1..3) {
                 if (Light.day(streamer.lightAt(x, surface.worldY + dy, z)) != Light.MAX) skyWrong++
             }
-            // Only Columns the ground actually caps. A tree's Surface is a leaf, and
-            // leaves are not a roof: daylight really does fall past a canopy into the gap
-            // under it, so asserting otherwise here would be asserting that trees cast
-            // shadows, which they do not in this model.
+            // Only Columns the ground actually caps. A tree's Surface is a leaf, and a
+            // leaf is not ground: the Cells below it are inside the tree, not buried
+            // under it, so they are not the case this check exists for.
             if (surface.type != BlockType.GRASS && surface.type != BlockType.DIRT) continue
             groundColumns++
             if (surface.worldY - 6 >= 0 &&
@@ -1075,15 +1098,13 @@ fun main() {
         }) {
             "the top of the block (y=5) must read 1.0"
         }
-        // The underside is shadowed, but only a little — and the exact number is worth
+        // The underside is in full shadow — and the exact number is worth
         // pinning because it is the first place an averaging mistake shows up, as a bright
         // band along every overhang.
         //
-        // Its corner light takes the Cell directly below the block and averages it with the
-        // three Cells beside that spot. The Cell below is NOT 0, and this took me three
-        // attempts to accept: the block shades its own column, but light falls *around* a
-        // lone block and back into the space beneath it, so the engine settles that Cell at
-        // 14 rather than 0. (14 + 15 + 15 + 15) / 4 = 14.75, which is 0.9833334 at full scale.
+        // Ray tracing: daylight comes from above, so a block's underside receives none.
+        // The Cell below the block is at 0, and the three Cells beside it are at 15. The
+        // average is (0 + 15 + 15 + 15) / 4 = 11.25, which is 0.75 at full scale.
         //
         // Asserting this rather than "less than 1.0" is deliberate. "Less than 1.0" passes
         // for a mesh that is fully flat, and a floating block with a pitch-black underside
@@ -1094,10 +1115,10 @@ fun main() {
             darkest = minOf(darkest, openMesh[i * stride + DAY])
             brightest = maxOf(brightest, openMesh[i * stride + DAY])
         }
-        check("and its underside is shadowed, but only a little",
-            darkest == 0.9833334f && brightest == 1f) {
-            "expected the mesh to span 0.9833334 (one Cell shaded to 14, averaged with three " +
-                    "at 15) to 1.0 (open sky), got $darkest to $brightest"
+        check("and its underside is in shadow",
+            kotlin.math.abs(darkest - 0.75f) < 0.001f && brightest == 1f) {
+            "expected the mesh to span ~0.75 (one Cell at 0, averaged with three at 15) " +
+                    "to 1.0 (open sky), got $darkest to $brightest"
         }
 
         var openOccluded = 0

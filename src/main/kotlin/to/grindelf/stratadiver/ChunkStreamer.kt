@@ -24,10 +24,10 @@ interface SolidWorld {
  * what makes border culling possible at all.
  *
  * **Null is not air.** It means the world has not produced that Cell. The mesher treats it
- * as "not Opaque" and draws the face, because the frontier has to be visible; Light treats
- * it as Unknown and refuses to propagate across it. Both readings are correct and they are
- * opposite, which is exactly why they are two explicitly named methods rather than one
- * method with a flag.
+ * as "not Opaque" and draws the face, because the frontier has to be visible; a daylight
+ * ray passes through it as open sky, and a torchlight ray stops at it. Both readings are
+ * correct and they are opposite, which is exactly why they are two explicitly named
+ * methods rather than one method with a flag.
  */
 interface Neighbourhood {
     /** The Block Type in this Cell, or null where no Chunk covers it. */
@@ -84,11 +84,11 @@ class ChunkStreamer(
      * The Chunk containing this Cell **only if it already exists**. Never generates.
      *
      * The difference from [chunkAt] is the whole point, and the two are deliberately
-     * separate methods rather than one with a flag. Anything that floods outward — light
-     * propagation, border culling — must not bring the world into existence as a side
-     * effect of looking at it: a flood that generated a neighbour mid-walk would be
-     * reading a Chunk whose own light has not been computed, and meshing it there and
-     * then would upload a Chunk lit from nothing.
+     * separate methods rather than one with a flag. Anything that reaches across a border
+     * — a light ray, border culling — must not bring the world into existence as a side
+     * effect of looking at it: a ray that generated a neighbour mid-trace would read a
+     * Chunk whose own light has not been computed, and meshing it there and then would
+     * upload a Chunk lit from nothing.
      */
     override fun existingChunkAt(x: Int, y: Int, z: Int): Chunk? {
         val cy = Math.floorDiv(y, Chunk.SIZE)

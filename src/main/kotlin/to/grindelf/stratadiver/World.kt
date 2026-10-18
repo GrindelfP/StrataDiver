@@ -395,9 +395,9 @@ class Chunk(val xOffset: Int, val yOffset: Int, val zOffset: Int) {
      * This Cell's packed light, or [Light.DARK] outside this Chunk.
      *
      * Answers dark rather than throwing past its own bounds, deliberately the same choice
-     * [getBlock] makes with AIR: both are reached from a flood fill that walks in world
-     * coordinates, and a boundary mistake should cost one Cell of light rather than the
-     * frame. The engine's own arithmetic is checked separately for exactly this.
+     * [getBlock] makes with AIR: both are reached from a light ray that steps Cell to Cell
+     * in world coordinates, and a boundary mistake should cost one Cell of light rather
+     * than the frame. The engine's own arithmetic is checked separately for exactly this.
      */
     fun packedLightAt(x: Int, y: Int, z: Int): Int {
         if (x !in 0 until SIZE || y !in 0 until SIZE || z !in 0 until SIZE) return Light.DARK
