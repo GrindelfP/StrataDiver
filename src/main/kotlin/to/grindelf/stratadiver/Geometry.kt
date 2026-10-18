@@ -35,32 +35,15 @@ class Mesh(val vao: Int, private val vbo: Int, val vertexCount: Int) {
  * Uploading vertex data to the GPU, and the handful of shapes the game draws over and
  * over.
  *
- * The attribute slots are fixed by vertex.glsl: position at 0, UV at 1, normal at 2. So
- * the only thing a caller has to say is how many floats each of its vertices has.
+ * One vertex format now: position and UV. It is what the GUI and the presenter draw with,
+ * and it is the whole of it — normals, per-vertex light and corner shade all belonged to
+ * the mesher, and a path tracer computes what light a surface received one ray at a time
+ * rather than reading it out of a vertex.
  */
 object Geometry {
 
     /** Position (3) + UV (2). Attributes 0 and 1. */
     const val POS_UV = 5
-
-    /** Position (3) + UV (2) + normal (3). Attributes 0, 1 and 2. */
-    const val POS_UV_NORMAL = 8
-
-    /**
-     * Position (3) + UV (2) + normal (3) + light (2) + shade (1). Attributes 0..4.
-     *
-     * What a Chunk mesh uses. Light is two floats — Daylight then Torchlight, each already
-     * divided by [Light.MAX] — because the two channels are independent and a shader that
-     * has to unpack them spends its time on arithmetic; shade is the corner occlusion, 0 to
-     * 3, as a separate float rather than packed into the light because it multiplies where
-     * light adds, and folding the two together meant unpicking them again in the shader.
-     *
-     * Both are per-vertex rather than per-face on purpose. That is what makes a corner dark
-     * and the middle of a wall not, which is most of what makes a block read as solid
-     * instead of as a flat sticker — and it is free here, because a face is two triangles
-     * and interpolating across them is what the hardware already does.
-     */
-    const val POS_UV_NORMAL_LIGHT = 11
 
     /**
      * Uploads [vertices] and returns the resulting mesh, or null if there is nothing to
@@ -86,23 +69,14 @@ object Geometry {
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(1, 2, GL_FLOAT, false, stride, 12L)
         glEnableVertexAttribArray(1)
-        if (floatsPerVertex >= POS_UV_NORMAL) {
-            glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, 20L)
-            glEnableVertexAttribArray(2)
-        }
-        if (floatsPerVertex == POS_UV_NORMAL_LIGHT) {
-            glVertexAttribPointer(3, 2, GL_FLOAT, false, stride, 32L)
-            glEnableVertexAttribArray(3)
-            glVertexAttribPointer(4, 1, GL_FLOAT, false, stride, 40L)
-            glEnableVertexAttribArray(4)
-        } else {
-            // Disabled explicitly rather than left alone. A disabled attribute reads the
-            // *generic* current value, which is global state and not part of the VAO — so
-            // a GUI quad would silently pick up whatever light happened to be current, and
-            // "happened to be current" is not a thing anyone should have to reason about.
-            glDisableVertexAttribArray(3)
-            glDisableVertexAttribArray(4)
-        }
+        // Attributes 2..4 held a normal, two light channels and a corner shade. Every one
+        // of them belonged to the rasterizer, and they are disabled explicitly rather than
+        // left alone: a disabled attribute reads the *generic* current value, which is
+        // global state and not part of the VAO, so leaving them enabled would let a quad
+        // quietly pick up whatever happened to be current.
+        glDisableVertexAttribArray(2)
+        glDisableVertexAttribArray(3)
+        glDisableVertexAttribArray(4)
 
         return Mesh(vao, vbo, vertices.size / floatsPerVertex)
     }
@@ -119,71 +93,6 @@ val UNIT_QUAD = floatArrayOf(
     0.5f, 0.5f, 0f, 1f, 1f,
     -0.5f, 0.5f, 0f, 0f, 1f
 )
-
-/**
- * The unit cube a Dropped Item is drawn from, with UVs in 0..1 so the shader can point
- * them at a Tile.
- */
-val UNIT_CUBE = floatArrayOf(
-    // Front face (Z+)
-    0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 1f, 0f, 1f, 1f, 0f, 0f, 0f, 1f,
-    1f, 1f, 1f, 1f, 1f, 0f, 0f, 1f, 1f, 1f, 1f, 1f, 1f, 0f, 0f, 1f,
-    0f, 1f, 1f, 0f, 1f, 0f, 0f, 1f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f,
-
-    // Back face (Z-)
-    0f, 0f, 0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f, 0f, 1f, 0f, 0f, -1f,
-    1f, 1f, 0f, 1f, 1f, 0f, 0f, -1f, 1f, 1f, 0f, 1f, 1f, 0f, 0f, -1f,
-    1f, 0f, 0f, 1f, 0f, 0f, 0f, -1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, -1f,
-
-    // Left face (X-)
-    0f, 1f, 1f, 1f, 1f, -1f, 0f, 0f, 0f, 1f, 0f, 0f, 1f, -1f, 0f, 0f,
-    0f, 0f, 0f, 0f, 0f, -1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, -1f, 0f, 0f,
-    0f, 0f, 1f, 1f, 0f, -1f, 0f, 0f, 0f, 1f, 1f, 1f, 1f, -1f, 0f, 0f,
-
-    // Right face (X+)
-    1f, 1f, 1f, 1f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f, 0f, 0f,
-    1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f,
-    1f, 1f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 1f, 1f, 1f, 1f, 1f, 0f, 0f,
-
-    // Top face (Y+)
-    0f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 0f, 1f, 1f, 0f, 0f, 0f, 1f, 0f,
-    1f, 1f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 0f, 0f, 1f, 0f,
-    1f, 1f, 0f, 1f, 1f, 0f, 1f, 0f, 0f, 1f, 0f, 0f, 1f, 0f, 1f, 0f,
-
-    // Bottom face (Y-)
-    0f, 0f, 0f, 0f, 1f, 0f, -1f, 0f, 1f, 0f, 0f, 1f, 1f, 0f, -1f, 0f,
-    1f, 0f, 1f, 1f, 0f, 0f, -1f, 0f, 1f, 0f, 1f, 1f, 0f, 0f, -1f, 0f,
-    0f, 0f, 1f, 0f, 0f, 0f, -1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, -1f, 0f
-)
-
-/**
- * Every vertex of the selection box samples the exact centre of [Atlas.LINE] — an opaque
- * white Tile — because the box is drawn unlit and has to survive the fragment shader's
- * alpha cutout. Sampling the wrong Tile here is what once made the wireframe vanish.
- */
-private val LINE_U = 0.5f / Atlas.TILES
-private val LINE_V = 3.5f / Atlas.TILES
-
-/** The 12 edges of a unit cube, as position-only vertices. */
-private val EDGES = floatArrayOf(
-    0f, 0f, 0f, 1f, 0f, 0f,   1f, 0f, 0f, 1f, 1f, 0f,   1f, 1f, 0f, 0f, 1f, 0f,
-    1f, 0f, 1f, 1f, 1f, 1f,   1f, 1f, 1f, 0f, 1f, 1f,   0f, 1f, 1f, 0f, 0f, 1f,
-    0f, 0f, 1f, 0f, 0f, 0f,   0f, 0f, 0f, 0f, 1f, 0f,   0f, 1f, 0f, 0f, 1f, 0f,
-    0f, 0f, 1f, 0f, 1f, 1f,   0f, 1f, 1f, 0f, 0f, 1f,   0f, 0f, 1f, 0f, 0f, 0f
-)
-
-/** The wireframe box drawn around the Cell the player is looking at. */
-val SELECTION_BOX = FloatArray(EDGES.size / 3 * 5).also { box ->
-    var o = 0
-    var i = 0
-    while (i < EDGES.size) {
-        box[o++] = EDGES[i++]
-        box[o++] = EDGES[i++]
-        box[o++] = EDGES[i++]
-        box[o++] = LINE_U
-        box[o++] = LINE_V
-    }
-}
 
 /**
  * The Minimap's quad: a unit square, drawn in screen space and sized by the model matrix.

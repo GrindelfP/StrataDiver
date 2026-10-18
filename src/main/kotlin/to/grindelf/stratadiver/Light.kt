@@ -56,34 +56,14 @@ class LightEngine(private val world: LitWorld) {
     }
 
     /**
-     * Chunks whose light this engine has written to since the last [takeDirty].
-     *
-     * A ray routinely crosses a Chunk border, because that is where the light has to
-     * go. A Chunk it crosses into was meshed from its *old* light and now shows the
-     * wrong thing, so the streamer re-meshes them. Without this the artefact is a
-     * one-Cell bright or dark seam along Chunk boundaries, which is precisely where
-     * nobody looks for a lighting bug and precisely where it is most visible once you
-     * do.
-     */
-    private val dirty = LinkedHashSet<Chunk>()
-
-    /**
      * The Chunk currently being lit from scratch, if any.
      *
      * Its own light is *supposed* to change — that is the whole job — and the caller
-     * meshes it immediately afterwards from the result. Marking it dirty as well would
-     * make every single Chunk get meshed twice during fill-in, which is pure waste paid
-     * on the exact frames the player is already waiting for the world to appear.
+     * consumes the result immediately. Recording it as a change as well would double the
+     * work for every Chunk during fill-in, paid on the exact frames the player is already
+     * waiting for the world to appear.
      */
     private var lighting: Chunk? = null
-
-    /** The Chunks whose light has changed, emptying the set. */
-    fun takeDirty(): Set<Chunk> {
-        if (dirty.isEmpty()) return emptySet()
-        val out = LinkedHashSet(dirty)
-        dirty.clear()
-        return out
-    }
 
     // --- Lighting a whole Chunk ---
 
@@ -411,7 +391,6 @@ class LightEngine(private val world: LitWorld) {
 
     private fun write(x: Int, y: Int, z: Int, packed: Int) {
         val touched = world.setLight(x, y, z, packed) ?: return
-        if (touched !== lighting) dirty.add(touched)
     }
 }
 

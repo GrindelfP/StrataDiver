@@ -6,6 +6,7 @@ import org.joml.Vector3i
 import org.lwjgl.glfw.GLFW.*
 import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.GL_BLEND
+import org.lwjgl.opengl.GL11.GL_BACK
 import org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT
 import org.lwjgl.opengl.GL11.GL_DEPTH_BUFFER_BIT
 import org.lwjgl.opengl.GL11.GL_DEPTH_TEST
@@ -22,6 +23,7 @@ import org.lwjgl.opengl.GL11.GL_TEXTURE_MIN_FILTER
 import org.lwjgl.opengl.GL11.GL_TEXTURE_WRAP_S
 import org.lwjgl.opengl.GL11.GL_TEXTURE_WRAP_T
 import org.lwjgl.opengl.GL11.GL_TRIANGLES
+import org.lwjgl.opengl.GL11.GL_PACK_ALIGNMENT
 import org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE
 import org.lwjgl.opengl.GL11.glBindTexture
 import org.lwjgl.opengl.GL11.glBlendFunc
@@ -29,15 +31,25 @@ import org.lwjgl.opengl.GL11.glClear
 import org.lwjgl.opengl.GL11.glClearColor
 import org.lwjgl.opengl.GL11.glDrawArrays
 import org.lwjgl.opengl.GL11.glEnable
+import org.lwjgl.opengl.GL11.glFinish
 import org.lwjgl.opengl.GL11.glGenTextures
 import org.lwjgl.opengl.GL11.glLineWidth
+import org.lwjgl.opengl.GL11.glPixelStorei
+import org.lwjgl.opengl.GL11.glReadBuffer
+import org.lwjgl.opengl.GL11.glReadPixels
 import org.lwjgl.opengl.GL11.glTexImage2D
 import org.lwjgl.opengl.GL11.glTexParameteri
+import org.lwjgl.opengl.GL11.glViewport
 import org.lwjgl.opengl.GL11.glTexSubImage2D
 import org.lwjgl.opengl.GL12.GL_CLAMP_TO_EDGE
 import org.lwjgl.opengl.GL13.GL_TEXTURE0
 import org.lwjgl.opengl.GL13.glActiveTexture
 import org.lwjgl.opengl.GL30.glBindVertexArray
+import java.awt.image.BufferedImage
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import javax.imageio.ImageIO
 import org.lwjgl.opengl.GL30.glGenerateMipmap
 import org.lwjgl.system.MemoryUtil.NULL
 import kotlin.math.cos
@@ -79,6 +91,23 @@ fun main() {
 class StrataDiver {
 
     companion object {
+        /**
+         * The frame's stages, in the order they happen, for [FrameTimes].
+         *
+         * Split where the splits are real rather than where they would be tidy. `trace` and
+         * `film` are separate because they used to be invisible to each other: the film was
+         * costing 40 ms a frame entirely outside the window the resolution controller was
+         * measuring, and the only reason anyone found out is that these two are now two
+         * numbers instead of one.
+         */
+        val STAGES = listOf("world", "snd", "trace", "film", "present", "gui")
+
+        const val STAGE_WORLD = 0
+        const val STAGE_SOUND = 1
+        const val STAGE_TRACE = 2
+        const val STAGE_FILM = 3
+        const val STAGE_PRESENT = 4
+        const val STAGE_GUI = 5
         /** The clock is frozen. The sun and moon still move; time of day just does not pass. */
         const val CONST_TIME: Boolean = true
 
@@ -86,6 +115,21 @@ class StrataDiver {
         const val MINECRAFT_DAY_SPEED: Float = 0.0052f
         const val DAY_SPEED: Float = QUICK_DAY_SPEED
 
+        /**
+         * The window's size in *points*, and how much framebuffer each point carries.
+         *
+         * Everything the game draws is positioned in framebuffer pixels, and on a Retina
+         * display that is not the same number. A 1280x720 window on this machine has a
+         * 2560x1440 framebuffer, so a GUI laid out in 1280x720 coordinates occupies the
+         * bottom-left quarter of the screen while the world fills all of it — every
+         * element correct in itself and the whole HUD in the wrong place.
+         *
+         * So the two numbers are kept apart deliberately: [WINDOW_WIDTH] is what is asked
+         * for, and [screenWidth]/[screenHeight] are what the display actually gave, read
+         * from the driver after the context exists. Guessing the ratio is the mistake —
+         * moving the game to a non-Retina monitor, or to a Mac with a different one, would
+         * silently move the HUD again.
+         */
         private const val WINDOW_WIDTH = 1280f
         private const val WINDOW_HEIGHT = 720f
 
@@ -145,8 +189,6 @@ class StrataDiver {
     private var window: Long = NULL
     private lateinit var shader: ShaderProgram
     private var atlasTexture: Int = 0
-    private lateinit var itemCube: Mesh
-    private lateinit var selectionBox: Mesh
 
     // --- The game's parts ---
     private val streamer = ChunkStreamer()
@@ -154,7 +196,16 @@ class StrataDiver {
     private lateinit var ui: UiPass
     private lateinit var sound: SoundEngine
     private val fps = FpsCounter()
-    private val layout = SlotLayout(WINDOW_WIDTH, WINDOW_HEIGHT)
+    private val frameTimes = FrameTimes(STAGES)
+    private lateinit var layout: SlotLayout
+
+    /**
+     * The framebuffer's real size in pixels, read from the driver once the context exists.
+     *
+     * Not the window size, and not the requested size: the number the GPU actually has.
+     */
+    private var screenWidth = WINDOW_WIDTH
+    private var screenHeight = WINDOW_HEIGHT
 
     // --- Walking ---
     //
@@ -176,11 +227,12 @@ class StrataDiver {
     private val landingFullVolume = 12f
 
     // --- Camera ---
-    private val projection = Matrix4f().perspective(
-        Math.toRadians(FOV_DEGREES.toDouble()).toFloat(), WINDOW_WIDTH / WINDOW_HEIGHT, 0.1f, 100f
-    )
-    private val view = Matrix4f()
-    private val identity = Matrix4f()
+    //
+    // No projection or view matrix. The rasterizer needed both, and keeping them after it
+    // went meant a second description of the lens that nothing consulted — the exact
+    // arrangement FOV_DEGREES was introduced to prevent, except that the guard had been
+    // deleted along with the thing it was guarding. The tracer generates rays directly and
+    // reads [FOV_DEGREES]; the GUI has its own orthographic projection inside UiPass.
 
     // --- State ---
     private val inventory = Inventory()
@@ -194,7 +246,6 @@ class StrataDiver {
     /** The Minimap's model: Surfaces, colours and freshness. No GL of its own. */
     private lateinit var minimap: Minimap
     private var minimapTexture = 0
-    private lateinit var minimapMesh: Mesh
 
     // --- Path tracing ---
 
@@ -206,17 +257,6 @@ class StrataDiver {
 
     /** Puts that average on the screen. */
     private lateinit var tracedImage: TracedImage
-
-    /**
-     * Whether the world is drawn by tracing rays or by rasterizing meshes.
-     *
-     * Both are here for now. The rasterizer is parked, not deleted: it is the only renderer
-     * whose *appearance* anyone has actually looked at, so keeping it costs one boolean and
-     * one `if` and buys the ability to answer "is the new renderer wrong, or is the world
-     * wrong" by pressing a key. Once the look is signed off it goes, along with the mesher
-     * and the light engine behind it.
-     */
-    private var pathTracing = true
 
     /** The tracer's resolution divisor. See [DEFAULT_PATH_SCALE]. */
     private var pathScale = DEFAULT_PATH_SCALE
@@ -268,6 +308,76 @@ class StrataDiver {
     private val controlMode: ControlMode
         get() = if (inventoryOpen) ControlMode.INTERACTIVE else ControlMode.GAMEPLAY
 
+    /**
+     * Runs the game for [frames] frames and writes a PNG of the last one, then returns.
+     *
+     * This is a rendering test rig, and it exists because of the project's oldest lesson:
+     * "it compiles" is not verification, and for a renderer the only real verification is
+     * looking at the picture. Every claim this renderer has ever made — that a shaft lets
+     * the Sun through, that leaves are see-through, that the HUD draws its own art — was
+     * checked by a person looking at a window, which is not available on demand and does
+     * not scale to a change of this size.
+     *
+     * Reading the framebuffer back is not a screenshot in the operating system's sense:
+     * it is the default framebuffer, after the GUI has been drawn over the picture, so what
+     * lands in the file is exactly what a player would have seen on that frame. Which is
+     * the entire point — it is the one question no offline check can answer on its own,
+     * and having it answerable in a second rather than in a playtest is worth more than the
+     * elegance of asserting on numbers instead.
+     */
+    fun capture(frames: Int, path: String) {
+        init()
+        player.spawnAboveGround(5f, 5f)
+        streamer.update(player.position)
+
+        for (i in 0 until frames) {
+            val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED
+            val sunDir = Vector3f(0.5f, sin(time.toDouble()).toFloat(), cos(time.toDouble()).toFloat())
+            daylight = max(0.05f, sunDir.y)
+            glClearColor(0.5f * daylight, 0.8f * daylight, daylight + 0.1f, 1.0f)
+            readInput()
+            tick()
+            aimedAt = player.raycast()
+            drawFrame(sunDir)
+
+            // Read before the swap, not after. After a swap the back buffer's contents are
+            // undefined — the first capture came back with a stale composite of two frames,
+            // which looked exactly like a renderer bug and was entirely the harness's.
+            if (i == frames - 1) writePng(path)
+            glfwSwapBuffers(window)
+            glfwPollEvents()
+            if (i % 10 == 0) println("  frame $i of $frames")
+        }
+
+        println("wrote $path")
+        cleanup()
+    }
+
+    /** Reads the default framebuffer back and writes it as a PNG. */
+    private fun writePng(path: String) {
+        val w = screenWidth.toInt()
+        val h = screenHeight.toInt()
+        val pixels = ByteBuffer.allocateDirect(w * h * 4)
+            .order(ByteOrder.nativeOrder())
+        glFinish()
+        glReadBuffer(GL_BACK)
+        glPixelStorei(GL_PACK_ALIGNMENT, 1)
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels)
+
+        // GL reads bottom-up and PNG is top-down.
+        val image = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val from = ((h - 1 - y) * w + x) * 4
+                val r = pixels.get(from).toInt() and 0xFF
+                val g = pixels.get(from + 1).toInt() and 0xFF
+                val b = pixels.get(from + 2).toInt() and 0xFF
+                image.setRGB(x, y, (r shl 16) or (g shl 8) or b)
+            }
+        }
+        ImageIO.write(image, "png", File(path))
+    }
+
     fun run() {
         init()
 
@@ -303,23 +413,34 @@ class StrataDiver {
 
         GL.createCapabilities()
 
+        // The size the GPU actually gave us, which on a Retina display is not the size that
+        // was asked for. Everything below is laid out in these pixels: the GUI, the traced
+        // image's stretch, and the viewport. Read after the context exists, because before
+        // it there is no framebuffer to ask.
+        val fw = IntArray(1)
+        val fh = IntArray(1)
+        glfwGetFramebufferSize(window, fw, fh)
+        screenWidth = fw[0].toFloat()
+        screenHeight = fh[0].toFloat()
+        glViewport(0, 0, fw[0], fh[0])
+        println("framebuffer ${fw[0]}x${fh[0]} (window asked for ${WINDOW_WIDTH.toInt()}x${WINDOW_HEIGHT.toInt()})")
+
+        layout = SlotLayout(screenWidth, screenHeight)
+
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         shader = ShaderProgram(
-            "src/main/resources/shaders/vertex.glsl",
-            "src/main/resources/shaders/fragment.glsl"
+            "src/main/resources/shaders/ui.vert",
+            "src/main/resources/shaders/ui.frag"
         )
         atlasTexture = uploadAtlas()
-        itemCube = Geometry.upload(UNIT_CUBE, Geometry.POS_UV_NORMAL)!!
-        selectionBox = Geometry.upload(SELECTION_BOX, Geometry.POS_UV)!!
-        minimapMesh = Geometry.upload(UNIT_SQUARE, Geometry.POS_UV)!!
         tracer = PathTracer(streamer, Art.buildAtlasPixels())
-        tracedImage = TracedImage(WINDOW_WIDTH, WINDOW_HEIGHT)
+        tracedImage = TracedImage(screenWidth, screenHeight)
         minimap = Minimap(streamer)
         minimapTexture = uploadMinimapTexture()
-        ui = UiPass(shader, atlasTexture, WINDOW_WIDTH, WINDOW_HEIGHT)
+        ui = UiPass(shader, atlasTexture, screenWidth, screenHeight)
         player = Player(streamer)
 
         // Audio is optional by design: a failure here is logged and the game runs quietly.
@@ -434,9 +555,10 @@ class StrataDiver {
 
     private fun loop() {
         while (!glfwWindowShouldClose(window)) {
+            frameTimes.begin()
+
             val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED
             val sunDir = Vector3f(0.5f, sin(time.toDouble()).toFloat(), cos(time.toDouble()).toFloat())
-            val moonDir = Vector3f(sunDir).mul(-1f)
 
             // Sky brightness follows the sun, floored so night is dim rather than a void.
             daylight = max(0.05f, sunDir.y)
@@ -445,16 +567,19 @@ class StrataDiver {
             readInput()
             tick()
             aimedAt = player.raycast()
+            frameTimes.stage(STAGE_WORLD)
 
             // The listener follows the eyes, so a block broken to the left is heard from
             // the left rather than from inside the player's skull.
             sound.updateListener(player.position, player.front)
             sound.isGuiOpen = controlMode == ControlMode.INTERACTIVE
+            frameTimes.stage(STAGE_SOUND)
 
-            drawFrame(sunDir, moonDir)
+            drawFrame(sunDir)
 
             glfwSwapBuffers(window)
             glfwPollEvents()
+            frameTimes.end()
         }
     }
 
@@ -565,18 +690,21 @@ class StrataDiver {
         if (minimap.refreshIfDue(player.position, System.nanoTime())) uploadMinimapPixels()
     }
 
-    private fun drawFrame(sunDir: Vector3f, moonDir: Vector3f) {
-        if (pathTracing) drawTracedWorld(sunDir) else drawRasterWorld(sunDir, moonDir)
+    private fun drawFrame(sunDir: Vector3f) {
+        drawTracedWorld(sunDir)
+        frameTimes.stage(STAGE_PRESENT)
 
-        // The GUI goes last and flat, over whichever renderer produced the picture.
+        // The GUI goes last and flat, over the picture.
         Hud.minimap(ui, minimapTexture, minimap, player, MINIMAP_DIAMETER, MINIMAP_MARGIN)
         Hud.crosshair(ui)
         fps.render(ui)
+        frameTimes.render(ui, 10f, 56f, 220f)
         Hud.hotbar(ui, layout, inventory, selectedSlot)
         if (inventoryOpen) {
             Hud.inventory(ui, layout, inventory)
             cursorItem?.let { Hud.heldItem(ui, it, cursorX(), cursorY()) }
         }
+        frameTimes.stage(STAGE_GUI)
     }
 
     // --- Path traced ---
@@ -597,11 +725,11 @@ class StrataDiver {
      *    would be guessing, and a guess about occlusion is exactly the bug that costs a day.
      */
     private fun drawTracedWorld(sunDir: Vector3f) {
-        val width = (WINDOW_WIDTH / pathScale).toInt().coerceAtLeast(16)
-        val height = (WINDOW_HEIGHT / pathScale).toInt().coerceAtLeast(16)
+        val width = (screenWidth / pathScale).toInt().coerceAtLeast(16)
+        val height = (screenHeight / pathScale).toInt().coerceAtLeast(16)
 
         val scene = TraceScene(
-            Camera(player.position, player.front, player.up, FOV_DEGREES, WINDOW_WIDTH / WINDOW_HEIGHT),
+            Camera(player.position, player.front, player.up, FOV_DEGREES, screenWidth / screenHeight),
             sunDir,
             daylight,
             entities,
@@ -623,8 +751,11 @@ class StrataDiver {
         tracer.sample(scene)
         traceMillis = (System.nanoTime() - started) / 1e6
         adaptPathScale()
+        frameTimes.stage(STAGE_TRACE)
 
         tracedImage.update(tracer.rgba(), tracer.width, tracer.height)
+        frameTimes.stage(STAGE_FILM)
+
         tracedImage.draw()
     }
 
@@ -679,79 +810,13 @@ class StrataDiver {
                 pathScale = wanted
                 // resize() discards the average, so the picture restarts at the new size
                 // rather than being stretched from the old one.
-                tracer.resize((WINDOW_WIDTH / pathScale).toInt().coerceAtLeast(16),
-                    (WINDOW_HEIGHT / pathScale).toInt().coerceAtLeast(16))
+                tracer.resize((screenWidth / pathScale).toInt().coerceAtLeast(16),
+                    (screenHeight / pathScale).toInt().coerceAtLeast(16))
             }
         }
     }
 
     // --- Rasterized ---
-
-    private fun drawRasterWorld(sunDir: Vector3f, moonDir: Vector3f) {
-        glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
-        shader.use()
-
-        shader.setVec3("sunDir", sunDir.x, sunDir.y, sunDir.z)
-        shader.setVec3("moonDir", moonDir.x, moonDir.y, moonDir.z)
-
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, atlasTexture)
-        shader.setInt("textureAtlas", 0)
-
-        view.setLookAt(player.position, Vector3f(player.position).add(player.front), player.up)
-        shader.setMatrix("projection", projection)
-        shader.setMatrix("view", view)
-
-        drawWorld()
-        drawSelection()
-    }
-
-    private fun drawWorld() {
-        shader.setMatrix("model", identity)
-        shader.setInt("isEntity", 0)
-
-        // Only the meshed neighbourhood is drawn — never every Chunk the player has ever
-        // visited. This is the loop that used to grow without bound.
-        for (chunk in streamer.meshed) {
-            // A Chunk with no mesh is fully meshed and correctly has nothing to draw: most
-            // of the world above the terrain is air.
-            val mesh = chunk.mesh ?: continue
-            glBindVertexArray(mesh.vao)
-            glDrawArrays(GL_TRIANGLES, 0, mesh.vertexCount)
-        }
-
-        // A dropped item is lit by the Cell it is lying in, not by its own face normals,
-        // so breaking a block in a dark tunnel drops something you cannot see until you
-        // walk into the light.
-        EntityRenderer.draw(entities, shader, itemCube) { pos ->
-            streamer.lightAt(
-                kotlin.math.floor(pos.x).toInt(),
-                kotlin.math.floor(pos.y).toInt(),
-                kotlin.math.floor(pos.z).toInt()
-            )
-        }
-    }
-
-    /** A wireframe around the Cell the player is looking at. */
-    private fun drawSelection() {
-        val target = aimedAt ?: return
-
-        glLineWidth(2.0f)
-        val block = target.blockPos
-        shader.setMatrix(
-            "model",
-            Matrix4f()
-                .translation(block.x.toFloat(), block.y.toFloat(), block.z.toFloat())
-                .scale(1.005f) // Inflated a hair so the box does not z-fight the face
-        )
-        // Unlit white: the wireframe must not be shaded by the sun, and must not be
-        // discarded by the alpha cutout that is what makes Cutouts work.
-        shader.setInt("isGui", 1)
-        shader.setTint(1f)
-        glBindVertexArray(selectionBox.vao)
-        glDrawArrays(GL_LINES, 0, selectionBox.vertexCount)
-        shader.setInt("isGui", 0)
-    }
 
     // --- Input ---
 
@@ -778,22 +843,6 @@ class StrataDiver {
     private fun onGameplayKey(key: Int) {
         if (key in GLFW_KEY_1..GLFW_KEY_9) selectedSlot = key - GLFW_KEY_1
         if (key == GLFW_KEY_E) openInteractiveLayer()
-        if (key == GLFW_KEY_F) toggleRenderer()
-    }
-
-    /**
-     * Swaps between the path tracer and the old rasterizer.
-     *
-     * A key rather than a constant, because for as long as both exist "the world looks wrong"
-     * has two candidate answers and only one of them is a bug. Being able to press a key and
-     * look is the difference between a diagnosis and a guess.
-     */
-    private fun toggleRenderer() {
-        pathTracing = !pathTracing
-        tracer.reset()
-        haveLastEye = false
-        glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
-        println("Renderer: ${if (pathTracing) "path tracer" else "rasterizer"}")
     }
 
     private fun onInteractiveKey(key: Int) {
@@ -931,12 +980,10 @@ class StrataDiver {
     // --- Teardown ---
 
     private fun cleanup() {
-        // Release every live mesh before the context dies, so a normal exit does not leave
-        // the driver holding the world's vertex buffers.
-        streamer.releaseAll()
+        // Nothing to release: the world's Cells are never discarded and hold no GPU memory,
+        // because there are no meshes.
         tracedImage.release()
         ui.release()
-        minimapMesh.release()
         sound.stop()
         glfwDestroyWindow(window)
         glfwTerminate()

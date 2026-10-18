@@ -66,6 +66,16 @@ fun main() {
     println("  max texture units ${glGetInteger(GL_MAX_TEXTURE_IMAGE_UNITS)}")
     println("  max 3D texture size ${glGetInteger(GL_MAX_3D_TEXTURE_SIZE)}")
 
+    // The window's size in *points* against its size in *pixels*. On a Retina display these
+    // differ, and a renderer that draws the GUI in points while the framebuffer is in pixels
+    // puts every HUD element in the wrong place — a failure that looks like a GUI bug and is
+    // entirely a coordinate-system one.
+    val w = IntArray(1); val h = IntArray(1)
+    glfwGetWindowSize(window, w, h)
+    val fw = IntArray(1); val fh = IntArray(1)
+    glfwGetFramebufferSize(window, fw, fh)
+    println("  window ${w[0]}x${h[0]}, framebuffer ${fw[0]}x${fh[0]}")
+
     val extensions = extensions()
 
     println("\n== 2. Compute shaders — the one that decides the architecture ==")

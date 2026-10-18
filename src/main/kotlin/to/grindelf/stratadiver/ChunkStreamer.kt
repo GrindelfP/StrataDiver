@@ -50,18 +50,21 @@ interface GridWorld {
 }
 
 /**
- * Decides which Chunks exist, which of them hold GPU memory, and what is in them.
+ * Decides which Chunks exist, generates them, and lights them.
  *
- * Two lifetimes are deliberately kept apart. [chunks] is the world's Cells, created on
- * first touch and never discarded — that is what makes "walk away and come back" find
- * your house still standing. [meshed] is only the subset currently holding triangles;
- * leaving releases the mesh and keeps the Cells, returning re-meshes from the same data.
- * Collapsing the two is what made frame cost grow with distance explored.
+ * One lifetime now. [chunks] is the world's Cells, created on first touch and never
+ * discarded — that is what makes "walk away and come back" find your house still standing.
+ *
+ * There used to be a second: a `meshed` set holding the subset with triangles on the GPU,
+ * released on leaving and rebuilt on return. The path tracer reads no vertices at all, so
+ * that set was pure cost — a ~570-entry `HashSet<Triple>` rebuilt and sorted every frame,
+ * eight Chunks lit and meshed per frame, seven neighbours re-meshed per block broken — paid
+ * every frame to produce geometry nothing ever drew.
  */
 class ChunkStreamer(
     private val renderDistance: Int = 4,
     private val verticalRenderDistance: Int = 3,
-    private val maxMeshesPerFrame: Int = 8
+    private val maxChunksPerFrame: Int = 12
 ) : SolidWorld, LitWorld, GridWorld {
 
     private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
@@ -91,14 +94,11 @@ class ChunkStreamer(
         }
     }
 
-    /** The subset of [chunks] that currently holds GPU memory. Never grows without bound. */
-    val meshed = mutableSetOf<Chunk>()
-
     /**
-     * Fills Chunks with light. Owned here rather than passed in, because a Chunk is not
-     * lit until something asks for it and the streamer is what asks.
-     */
-    val light = LightEngine(this)
+ * Fills Chunks with light. Owned here rather than passed in, because a Chunk is not
+ * lit until something asks for it and the streamer is what asks.
+ */
+val light = LightEngine(this)
 
     // --- The world as the game sees it ---
 
@@ -204,51 +204,30 @@ class ChunkStreamer(
     }
 
     /**
-     * [setBlockData], plus re-meshing the Chunk and any neighbour whose light changed.
+     * [setBlockData]. This is the whole of a block change now.
      *
-     * The neighbours matter: light that crossed into another Chunk has made that Chunk's
-     * triangles wrong. They are only re-meshed if they are actually being drawn, so
-     * building far from the view costs nothing extra.
-     *
-     * A Chunk sharing a face with the changed Cell is re-meshed regardless of whether its
-     * light changed: the mesh depends on block data too, and a break or place at a Chunk
-     * border exposes a face whose neighbour's mesh was culled against the old state. If
-     * that neighbour's light happens to be unchanged (both sides at full daylight, for
-     * instance), the dirty-set alone would never re-mesh it and the player would see a
-     * hole through the world until some later change happened to touch that Chunk's light.
+     * It used to be followed by re-meshing this Chunk, every Chunk sharing a face with the
+     * changed Cell, and every Chunk whose light had moved — up to seven meshes per broken
+     * block, each one walking its neighbours' Cells to decide which faces are exposed. All
+     * of it existed to keep triangles in step with Cell data, and the path tracer reads no
+     * triangles: it walks the Cells itself, every ray, and so is always describing the world
+     * as it is rather than as it was when it was last meshed.
      */
     fun setBlock(x: Int, y: Int, z: Int, type: BlockType): Boolean {
         if (!setBlockData(x, y, z, type)) return false
-        // Registered here rather than at the call site: a mesh nobody tracks would be
-        // drawn as nothing and never freed.
-        mesh(chunkAt(x, y, z)!!)
-
-        // Re-mesh any Chunk sharing a face with the changed Cell, whether or not its
-        // light changed. The changed Cell may sit on a Chunk border, and the face that
-        // was culled against the old neighbour state is in the *other* Chunk.
-        val size = Chunk.SIZE
-        val lx = Math.floorMod(x, size)
-        val ly = Math.floorMod(y, size)
-        val lz = Math.floorMod(z, size)
-        if (lx == 0) existingChunkAt(x - 1, y, z)?.let { if (it in meshed) mesh(it) }
-        if (lx == size - 1) existingChunkAt(x + 1, y, z)?.let { if (it in meshed) mesh(it) }
-        if (ly == 0) existingChunkAt(x, y - 1, z)?.let { if (it in meshed) mesh(it) }
-        if (ly == size - 1) existingChunkAt(x, y + 1, z)?.let { if (it in meshed) mesh(it) }
-        if (lz == 0) existingChunkAt(x, y, z - 1)?.let { if (it in meshed) mesh(it) }
-        if (lz == size - 1) existingChunkAt(x, y, z + 1)?.let { if (it in meshed) mesh(it) }
-
-        for (touched in light.takeDirty()) if (touched in meshed) mesh(touched)
         return true
     }
 
     // --- Streaming ---
 
     /**
-     * Brings the meshed neighbourhood back in line with where the player is standing.
+     * Brings the neighbourhood within reach into existence, nearest first.
      *
-     * Releasing is unconditional and immediate; building is rationed to [maxMeshesPerFrame].
-     * Together they keep both the GPU footprint and the per-frame draw list bounded by
-     * the render distance rather than by how far the player has ever walked.
+     * There is nothing to release any more. Cells are never discarded, so leaving a Chunk
+     * costs nothing at all and coming back finds it already made — which is the whole
+     * reason the two lifetimes were worth keeping apart while there were triangles to hold.
+     * What is left is the filling-in, rationed to [maxChunksPerFrame] so crossing a
+     * boundary closes the world in over a few frames instead of stalling on one.
      */
     fun update(centre: Vector3f) {
         val playerCX = Math.floorDiv(floor(centre.x).toInt(), Chunk.SIZE)
@@ -267,68 +246,31 @@ class ChunkStreamer(
             }
         }
 
-        // Release what fell out of reach. Its Cells stay in `chunks`.
-        val iterator = meshed.iterator()
-        while (iterator.hasNext()) {
-            val chunk = iterator.next()
-            if (chunk.position !in wanted) {
-                chunk.releaseMesh()
-                iterator.remove()
-            }
-        }
+        // Release what fell out of reach. There is nothing to release: Cells are never
+        // discarded, so leaving a Chunk costs nothing and returning finds it already made.
 
         // Build what came into reach, nearest first so the world closes in around the
         // player rather than filling in from the far edge inward.
-        //
-        // `meshedPositions` is snapshotted rather than querying the set per wanted Chunk:
-        // with ~570 in reach, scanning the set each time would be a few hundred thousand
-        // comparisons every single frame.
-        val meshedPositions = HashSet<Triple<Int, Int, Int>>(meshed.size * 2)
-        for (chunk in meshed) meshedPositions.add(chunk.position)
+        val existing = HashSet<Triple<Int, Int, Int>>()
+        for (pos in wanted) if (pos in chunks) existing.add(pos)
 
         var built = 0
-        for (pos in wanted.filter { it !in meshedPositions }.sortedBy { (cx, cy, cz) ->
+        for (pos in wanted.filter { it !in existing }.sortedBy { (cx, cy, cz) ->
             val dx = cx - playerCX
             val dy = cy - playerCY
             val dz = cz - playerCZ
             dx * dx + dy * dy + dz * dz
         }) {
-            if (built >= maxMeshesPerFrame) break
-            val chunk = chunkAtGrid(pos.first, pos.second, pos.third)
-            // Light before triangles, always. A mesh built from a Chunk whose light has not
-            // been computed would upload a Chunk lit from nothing and draw it, and the only
-            // symptom would be a patch of the world that is the wrong brightness for no
-            // reason anyone could name.
-            light.lightChunk(chunk)
-            mesh(chunk)
+            if (built >= maxChunksPerFrame) break
+            // Light before anything reads it, always. A Chunk whose light has not been
+            // computed would be walked by a ray that would find it dark for no reason
+            // anyone could name.
+            light.lightChunk(chunkAtGrid(pos.first, pos.second, pos.third))
             built++
         }
-
-        // Light stepped over a border while filling, so some Chunks already meshed may now
-        // hold triangles built from light that has since changed.
-        for (touched in light.takeDirty()) if (touched in meshed) mesh(touched)
     }
 
-    /** Meshes [chunk], replacing whatever it had on the GPU before. */
-    fun mesh(chunk: Chunk) {
-        // Release first. This frees the old mesh and drops the old vertex count, so it
-        // has to happen before the new count is computed — getting that order wrong
-        // zeroes every Chunk the instant it is built and the world disappears.
-        chunk.releaseMesh()
-
-        chunk.mesh = Geometry.upload(
-            MeshGenerator.generateChunkMesh(chunk, this),
-            Geometry.POS_UV_NORMAL_LIGHT
-        )
-
-        meshed.add(chunk)
-    }
-
-    /** Frees every live mesh, keeping the Cells. Called before the GL context dies. */
-    fun releaseAll() {
-        meshed.forEach { it.releaseMesh() }
-        meshed.clear()
-    }
+    /** Nothing to release. The Cells are never discarded, so nothing is ever held. */
 
     // --- Aboveground reading, for the Minimap ---
 
