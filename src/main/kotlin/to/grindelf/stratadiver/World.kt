@@ -762,9 +762,9 @@ object MeshGenerator {
         addVertex(v, x + 1f, y + 1f, z, uMax, vMax, 1f, 0f, 0f, s, CORNER_01)
         addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, 1f, 0f, 0f, s, CORNER_11)
         addVertex(v, x + 1f, y, z + 1f, uMin, vMin, 1f, 0f, 0f, s, CORNER_10)
-        addVertex(v, x + 1f, y, z, uMax, vMin, 1f, 0f, 0f, s, CORNER_00)
         addVertex(v, x + 1f, y + 1f, z, uMax, vMax, 1f, 0f, 0f, s, CORNER_01)
-        addVertex(v, x + 1f, y + 1f, z + 1f, uMin, vMax, 1f, 0f, 0f, s, CORNER_11)
+        addVertex(v, x + 1f, y, z, uMax, vMin, 1f, 0f, 0f, s, CORNER_00)
+        addVertex(v, x + 1f, y, z + 1f, uMin, vMin, 1f, 0f, 0f, s, CORNER_10)
     }
 
     /**

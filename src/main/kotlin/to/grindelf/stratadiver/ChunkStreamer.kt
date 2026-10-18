@@ -17,7 +17,7 @@ interface SolidWorld {
 /**
  * What is in the Cell next door, when the next door is in a different Chunk.
  *
- * A [Chunk] can only answer for its own 16×16×16, and `Chunk.getBlock` answers AIR
+ * A [Chunk] can only answer for its own 16x16x16, and `Chunk.getBlock` answers AIR
  * outside those bounds — which is a lie the mesher used to believe. Every face on a
  * Chunk's border therefore looked exposed no matter what was actually against it, so the
  * mesher drew faces buried inside the neighbouring solid. Reading across the boundary is
@@ -163,12 +163,34 @@ class ChunkStreamer(
      * The neighbours matter: light that crossed into another Chunk has made that Chunk's
      * triangles wrong. They are only re-meshed if they are actually being drawn, so
      * building far from the view costs nothing extra.
+     *
+     * A Chunk sharing a face with the changed Cell is re-meshed regardless of whether its
+     * light changed: the mesh depends on block data too, and a break or place at a Chunk
+     * border exposes a face whose neighbour's mesh was culled against the old state. If
+     * that neighbour's light happens to be unchanged (both sides at full daylight, for
+     * instance), the dirty-set alone would never re-mesh it and the player would see a
+     * hole through the world until some later change happened to touch that Chunk's light.
      */
     fun setBlock(x: Int, y: Int, z: Int, type: BlockType): Boolean {
         if (!setBlockData(x, y, z, type)) return false
         // Registered here rather than at the call site: a mesh nobody tracks would be
         // drawn as nothing and never freed.
         mesh(chunkAt(x, y, z)!!)
+
+        // Re-mesh any Chunk sharing a face with the changed Cell, whether or not its
+        // light changed. The changed Cell may sit on a Chunk border, and the face that
+        // was culled against the old neighbour state is in the *other* Chunk.
+        val size = Chunk.SIZE
+        val lx = Math.floorMod(x, size)
+        val ly = Math.floorMod(y, size)
+        val lz = Math.floorMod(z, size)
+        if (lx == 0) existingChunkAt(x - 1, y, z)?.let { if (it in meshed) mesh(it) }
+        if (lx == size - 1) existingChunkAt(x + 1, y, z)?.let { if (it in meshed) mesh(it) }
+        if (ly == 0) existingChunkAt(x, y - 1, z)?.let { if (it in meshed) mesh(it) }
+        if (ly == size - 1) existingChunkAt(x, y + 1, z)?.let { if (it in meshed) mesh(it) }
+        if (lz == 0) existingChunkAt(x, y, z - 1)?.let { if (it in meshed) mesh(it) }
+        if (lz == size - 1) existingChunkAt(x, y, z + 1)?.let { if (it in meshed) mesh(it) }
+
         for (touched in light.takeDirty()) if (touched in meshed) mesh(touched)
         return true
     }
@@ -269,7 +291,7 @@ class ChunkStreamer(
      * produced that place yet.
      *
      * Scanning walks Chunk layers downward, skipping ones this world has never made.
-     * That is the one place in the codebase where "missing" and "air" are deliberately
+     * That is the one place in this codebase where "missing" and "air" are deliberately
      * different answers, and the Minimap is the only caller that depends on the
      * difference: a Column the streamer has not reached is Unknown, not empty, and a map
      * that conflated them would be confidently wrong about the frontier.

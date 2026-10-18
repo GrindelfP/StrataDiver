@@ -44,7 +44,7 @@ frame, and routes input. Everything with behaviour of its own is its own type.
 | `StrataDiver.kt` | The entry point (`fun main()`, hence JVM class `StrataDiverKt` in `pom.xml`) *and* the game: window/GL lifecycle, frame order, input routing, entity tick + pickup, break/place (class `StrataDiver`, enum `ControlMode`). No separate Main file exists. |
 | `ShaderProgram.kt` | Compiles/links the program; resolves every uniform location **once** and sets it by name |
 | `Geometry.kt` | `Mesh` (vao+vbo+count, released together), `Geometry.upload()`, and the static shapes `UNIT_QUAD`/`UNIT_CUBE`/`SELECTION_BOX`/`MINIMAP_QUAD` |
-| `ChunkStreamer.kt` | Which Chunks exist (`chunks`), which hold GPU memory (`meshed`), block read/write, streaming (interface `SolidWorld`) |
+| `ChunkStreamer.kt` | Which Chunks exist (`chunks`), which hold GPU memory (`meshed`), block read/write, streaming (interface `SolidWorld`). `setBlock` re-meshes any Chunk sharing a face with the changed Cell, not just those whose light changed |
 | `Player.kt` | Position/velocity/physics, look, raycast, spawn, `RaycastResult`. Knows nothing about GLFW |
 | `UiPass.kt` | Screen-space drawing: the ortho projection, flat Tiles, composited isometric Icons |
 | `Hud.kt` | Crosshair, hotbar, inventory, cursor-held item — pure drawing |
