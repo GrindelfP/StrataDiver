@@ -132,7 +132,15 @@ GL context, so pick the strongest check available and say plainly what it could 
 - **`tools/Check.kt` is that check.** It asserts the real numbers behind the things that have
   actually broken before: mesher vertex counts and all-air Chunk counts, generation
   determinism, slot hit-testing, the seven-segment table, physics and raycast against a fake
-  world. Run it after any change to those:
+  world, and the path tracer. Run it after any change to those:
+
+  The tracer is pure Kotlin, so it is covered here too — against a world built in the check
+  rather than one that happens to be on screen. The Cell walk is compared against closed form
+  over 1296 directions (a Cell is a box, so the answer exists exactly), cutouts are checked
+  against the art's own alpha, a roofed room is checked for a sunbeam through its gap, and a
+  sealed room is checked for being exactly dark. `PathTracer.probe()` is a seam that exists
+  only to make that possible: without it the walk could only be tested by tracing a picture
+  and looking at it, which is how a stepped ray skipped a Cell for a whole release.
 
   ```bash
   export JAVA_HOME=$(/usr/libexec/java_home -v 23)   # Kotlin 1.9.0 cannot parse JDK 27
