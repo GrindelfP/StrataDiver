@@ -22,6 +22,7 @@ import org.lwjgl.opengl.GL20.glUniform1f
 import org.lwjgl.opengl.GL20.glUniform1i
 import org.lwjgl.opengl.GL20.glUniform2f
 import org.lwjgl.opengl.GL20.glUniform3f
+import org.lwjgl.opengl.GL20.glUniform3i
 import org.lwjgl.opengl.GL20.glUniformMatrix4fv
 import org.lwjgl.opengl.GL20.glUseProgram
 import java.io.File
@@ -92,6 +93,16 @@ class ShaderProgram(vertexPath: String, fragmentPath: String) {
     fun use() = glUseProgram(id)
 
     /**
+     * The location of a uniform, for the array uniforms GL has no convenience setter for.
+     *
+     * Public because [GpuTracer] uploads whole tables — eight Block Types' properties, forty
+     * eight tile offsets — and there is no `glUniform4iv` wrapper in LWJGL's generated
+     * bindings to hide behind. Resolved through the same cache as everything else, so it
+     * costs one string comparison per frame and not one per draw.
+     */
+    fun uniform(name: String) = location(name)
+
+    /**
      * A uniform the program does not use resolves to -1, and every glUniform* call with
      * -1 is a no-op. So an unused name costs nothing and, unlike crashing, does not force
      * every call site to know which uniforms exist.
@@ -105,6 +116,17 @@ class ShaderProgram(vertexPath: String, fragmentPath: String) {
     fun setVec2(name: String, x: Float, y: Float) = glUniform2f(location(name), x, y)
 
     fun setVec3(name: String, x: Float, y: Float, z: Float) = glUniform3f(location(name), x, y, z)
+
+    /**
+     * A vector of integers, for the uniforms that are genuinely integer-valued.
+     *
+     * Separate from [setVec3] because OpenGL will not quietly convert: `glUniform3f` against
+     * an `ivec3` raises INVALID_OPERATION and leaves the uniform at its default. Which is a
+     * silent failure with an obvious-looking call site — the shader keeps working, the
+     * uniform keeps being zero, and the result is a world with no geometry in it rather than
+     * an error.
+     */
+    fun setVec3i(name: String, x: Int, y: Int, z: Int) = glUniform3i(location(name), x, y, z)
 
     fun setMatrix(name: String, matrix: Matrix4f) = glUniformMatrix4fv(location(name), false, matrix.get(stack))
 

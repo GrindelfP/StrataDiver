@@ -154,15 +154,29 @@ class StrataDiver {
          */
         private const val DEFAULT_PATH_SCALE = 2
 
-        /** What the adaptive resolution aims for, per frame, in milliseconds. */
-        private const val PATH_BUDGET_MS = 55.0
+        /**
+         * What the adaptive resolution aims for, per frame, in milliseconds.
+         *
+         * Was 55, which optimises for image quality per frame and calls twenty frames a
+         * second a success. Sixty frames a second is sixteen and a bit, and a progressive
+         * renderer that converges *faster* is worth more than one that traces a little more
+         * detail per sample -- the picture is the average, and the average gets there by
+         * the frame count.
+         */
+        private const val PATH_BUDGET_MS = 16.7
+
+        /** How far the resolution may fall before it stops falling. */
+        private const val PATH_SCALE_LIMIT = 4
 
         /**
-     * How far the adaptive resolution is allowed to wander, in either direction. */
-        private const val PATH_SCALE_LIMIT = 8
-
-        /** How many frames of tracing stand between two decisions about the resolution. */
-        private const val SCALE_DECISION_FRAMES = 24
+         * How many frames of tracing stand between two decisions about the resolution.
+         *
+         * Was 24, and at the frame rates a struggling machine produces that is seven
+         * seconds a notch -- which is why the game spent a minute and a half visibly
+         * settling before it looked like anything. Six averages out the cold frame after a
+         * reset and still feels like a response rather than a trend.
+         */
+        private const val SCALE_DECISION_FRAMES = 6
 
         /**
          * The lens.
@@ -256,10 +270,11 @@ class StrataDiver {
     private lateinit var tracer: PathTracer
 
     /** Puts that average on the screen. */
-    private lateinit var tracedImage: TracedImage
+    private lateinit var volume: WorldVolume
+    private lateinit var gpu: GpuTracer
 
     /** The tracer's resolution divisor. See [DEFAULT_PATH_SCALE]. */
-    private var pathScale = DEFAULT_PATH_SCALE
+    private var pathScale = Integer.getInteger("stratadiver.scale", DEFAULT_PATH_SCALE)
 
     /**
      * What the last frame of tracing cost, and the running average of that.
@@ -331,6 +346,13 @@ class StrataDiver {
         streamer.update(player.position)
 
         for (i in 0 until frames) {
+            // The frame timer is driven here too. It is easy to forget — the capture path
+            // grew separately from the real loop — and forgetting it does not crash
+            // anything: it leaves the adaptive resolution reading a stale number and
+            // hunting between resolutions for no reason, which looks exactly like a
+            // renderer that cannot decide how fast it is.
+            frameTimes.begin()
+
             val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED
             val sunDir = Vector3f(0.5f, sin(time.toDouble()).toFloat(), cos(time.toDouble()).toFloat())
             daylight = max(0.05f, sunDir.y)
@@ -346,10 +368,16 @@ class StrataDiver {
             if (i == frames - 1) writePng(path)
             glfwSwapBuffers(window)
             glfwPollEvents()
+            frameTimes.end()
             if (i % 10 == 0) println("  frame $i of $frames")
         }
 
         println("wrote $path")
+        println("settled at scale $pathScale (${screenWidth / pathScale}x${screenHeight / pathScale}), " +
+            "${"%.1f".format(frameTimes.frameMillis)} ms a frame")
+        println("  " + STAGES.mapIndexed { i, name ->
+            "${"%.1f".format(frameTimes.average(i))} $name"
+        }.joinToString("  "))
         cleanup()
     }
 
@@ -436,8 +464,8 @@ class StrataDiver {
             "src/main/resources/shaders/ui.frag"
         )
         atlasTexture = uploadAtlas()
-        tracer = PathTracer(streamer, Art.buildAtlasPixels())
-        tracedImage = TracedImage(screenWidth, screenHeight)
+        volume = WorldVolume(streamer)
+        gpu = GpuTracer(volume, Art.buildAtlasPixels())
         minimap = Minimap(streamer)
         minimapTexture = uploadMinimapTexture()
         ui = UiPass(shader, atlasTexture, screenWidth, screenHeight)
@@ -728,16 +756,13 @@ class StrataDiver {
         val width = (screenWidth / pathScale).toInt().coerceAtLeast(16)
         val height = (screenHeight / pathScale).toInt().coerceAtLeast(16)
 
-        val scene = TraceScene(
-            Camera(player.position, player.front, player.up, FOV_DEGREES, screenWidth / screenHeight),
-            sunDir,
-            daylight,
-            entities,
-            aimedAt?.blockPos
-        )
+        // The volume follows the player, and re-uploads whatever Chunks have arrived since
+        // last frame. Called here rather than in tick() because it is the tracer's input, and
+        // the tracer is the only thing that reads it.
+        volume.update(player.position)
 
         if (sceneHasMoved()) {
-            tracer.reset()
+            gpu.reset()
             lastEye.set(player.position)
             lastLook.set(player.front)
             lastTraceVersion = streamer.version
@@ -745,18 +770,28 @@ class StrataDiver {
             haveLastEye = true
             traceSamplesAveraged = 0
         }
-        tracer.resize(width, height)
+        gpu.resize(width, height)
 
-        val started = System.nanoTime()
-        tracer.sample(scene)
-        traceMillis = (System.nanoTime() - started) / 1e6
-        adaptPathScale()
+        // The Sun and the Moon, normalised. The direction the game hands over is
+        // (0.5, sin(t), cos(t)), whose length is not 1 — feeding it to a shader that
+        // computes cosines with it makes every sun-facing surface receive 1.12x the light
+        // it should, and moves the Sun's own glow in the sky to a narrower angle than it
+        // is. The CPU tracer normalises inside its Emitters, which is why this only showed
+        // up on the GPU: the two were not computing the same cosine.
+        val sunLength = sunDir.length()
+        val normalisedSun = Vector3f(sunDir).div(sunLength)
+        val moonDir = Vector3f(normalisedSun).mul(-1f)
+
+        gpu.sample(
+            player.position, player.front, player.up,
+            FOV_DEGREES, screenWidth / screenHeight,
+            normalisedSun, moonDir, daylight,
+            aimedAt?.blockPos
+        )
         frameTimes.stage(STAGE_TRACE)
 
-        tracedImage.update(tracer.rgba(), tracer.width, tracer.height)
-        frameTimes.stage(STAGE_FILM)
-
-        tracedImage.draw()
+        gpu.present(screenWidth.toInt(), screenHeight.toInt())
+        adaptPathScale()
     }
 
     /**
@@ -792,14 +827,24 @@ class StrataDiver {
      * which is worse than either.
      */
     private fun adaptPathScale() {
-        traceMillisAveraged = if (traceSamplesAveraged == 0) traceMillis
-        else traceMillisAveraged * 0.85 + traceMillis * 0.15
+        // Driven by the tracing stage, not by the whole frame.
+        //
+        // The whole frame looks like the obvious answer and is not: it includes the swap,
+        // and the swap blocks on vsync for as long as the display wants, so it reports
+        // 250 ms of "cost" for 50 ms of work and the controller then sits pinned at minimum
+        // resolution forever. The tracing stage is the one that scales with the picture —
+        // measured at 11.7 ms at 320x180, 16.5 at 640x360 and 39.5 at 1280x720, which is
+        // four times the pixels for four times the time and therefore the only number here
+        // that is describing the renderer rather than the monitor.
+        traceMillisAveraged =
+            if (traceSamplesAveraged == 0) frameTimes.average(STAGE_TRACE)
+            else traceMillisAveraged * 0.7 + frameTimes.average(STAGE_TRACE) * 0.3
         traceSamplesAveraged++
         if (traceSamplesAveraged < SCALE_DECISION_FRAMES) return
 
         val moving = when {
             traceMillisAveraged > PATH_BUDGET_MS -> 1
-            traceMillisAveraged < PATH_BUDGET_MS / 3 -> -1
+            traceMillisAveraged < PATH_BUDGET_MS * 0.7 -> -1
             else -> 0
         }
         traceSamplesAveraged = 0
@@ -809,9 +854,9 @@ class StrataDiver {
             if (wanted != pathScale) {
                 pathScale = wanted
                 // resize() discards the average, so the picture restarts at the new size
-                // rather than being stretched from the old one.
-                tracer.resize((screenWidth / pathScale).toInt().coerceAtLeast(16),
-                    (screenHeight / pathScale).toInt().coerceAtLeast(16))
+                // rather than being stretched from the old one. Not called here: the next
+                // frame's drawTracedWorld does it, before anything reads the size, and doing
+                // it in both places is how a half-resized accumulator appears.
             }
         }
     }
@@ -982,7 +1027,8 @@ class StrataDiver {
     private fun cleanup() {
         // Nothing to release: the world's Cells are never discarded and hold no GPU memory,
         // because there are no meshes.
-        tracedImage.release()
+        gpu.release()
+        volume.release()
         ui.release()
         sound.stop()
         glfwDestroyWindow(window)

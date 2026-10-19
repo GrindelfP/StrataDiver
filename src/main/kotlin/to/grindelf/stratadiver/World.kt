@@ -109,8 +109,17 @@ enum class BlockType(
      */
     GLOWSTONE(7, true, allFaces(Atlas.GLOWSTONE), emission = 14);
 
-    /** The tile this Block Type draws on the given face. */
+    /** This Block Type's Tile on the given face. */
     fun tile(face: Face): TileRef = faces[face] ?: faces.values.first()
+
+    /**
+     * Whether this Block Type has any art at all.
+     *
+     * AIR has none, and asking it for a Tile throws — which is correct, because a ray never
+     * asks an empty Cell what colour it is. Anything that walks *every* Block Type's *every*
+     * face, rather than answering one question about one Cell, has to check this first.
+     */
+    val hasArt: Boolean get() = faces.isNotEmpty()
 
     /** Side tile, used for Icons and dropped items. */
     val primary: TileRef get() = tile(Face.NORTH)

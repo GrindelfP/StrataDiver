@@ -45,9 +45,15 @@ class FrameTimes(private val stageNames: List<String>) {
     fun stage(index: Int) {
         val now = System.nanoTime()
         val delta = now - mark
+        // Milliseconds, in both places. One of these was accumulating nanoseconds while
+        // the other accumulated milliseconds, which made the frame total about a million
+        // times too large — and the adaptive resolution controller, which reads it to
+        // decide how hard it can afford to work, sat pinned at minimum resolution forever
+        // without ever printing anything wrong.
+        val ms = delta / 1e6
         since[index] = delta
-        total[index] += delta / 1e6
-        frameTotal += delta
+        total[index] += ms
+        frameTotal += ms
         mark = now
     }
 
