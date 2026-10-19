@@ -376,14 +376,21 @@ bool occluded(vec3 o, vec3 d, float maxT) {
 vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo) {
     vec3 result = vec3(0.0);
 
+    // The disc's solid angle, spread over which the Sun's and the Moon's power becomes a
+    // radiance. The CPU tracer's Emitters divide by this (radiance = power / solidAngle) so
+    // the solid angle cancels against the one below and the Sun stays bright; the GPU port
+    // dropped that division and multiplied the irradiance by the ~0.004 steradian disc directly,
+    // which dimmed the Sun to a smudge and cost the world its shadows.
+    float solidAngle = TAU * (1.0 - cos(SUN_ANGLE));
+
     // The Sun. Its radiance carries the time of day, which is why a low Sun is not merely
     // a Sun at a grazing angle but a dimmer Sun, and its colour is very slightly warm.
     float cosSun = dot(n, uSunDir);
     if (cosSun > 0.0) {
         vec3 cone = sampleCone(s, uSunDir, SUN_ANGLE);
         if (!occluded(p, cone, MAX_DISTANCE)) {
-            float omega = TAU * (1.0 - cos(SUN_ANGLE)) * cosSun;
-            result += albedo * INV_PI * SUN_IRRADIANCE * uDaylight * vec3(1.0, 0.97, 0.90) * omega;
+            float omega = solidAngle * cosSun;
+            result += albedo * INV_PI * (SUN_IRRADIANCE / solidAngle) * uDaylight * vec3(1.0, 0.97, 0.90) * omega;
         }
     }
 
@@ -396,8 +403,8 @@ vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo) {
         if (cosMoon > 0.0) {
             vec3 cone = sampleCone(s, -uSunDir, SUN_ANGLE);
             if (!occluded(p, cone, MAX_DISTANCE)) {
-                float omega = TAU * (1.0 - cos(SUN_ANGLE)) * cosMoon;
-                result += albedo * INV_PI * MOON_IRRADIANCE * moonUp * vec3(1.0, 1.05, 1.30) * omega;
+                float omega = solidAngle * cosMoon;
+                result += albedo * INV_PI * (MOON_IRRADIANCE / solidAngle) * moonUp * vec3(1.0, 1.05, 1.30) * omega;
             }
         }
     }
