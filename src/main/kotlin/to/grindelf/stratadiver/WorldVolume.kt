@@ -163,12 +163,15 @@ class WorldVolume(
         if (base < 0 || baseY < 0 || baseZ < 0) return
         if (base + Chunk.SIZE > sizeX || baseY + Chunk.SIZE > sizeY || baseZ + Chunk.SIZE > sizeZ) return
 
-        // Chunk's own indexing is x-major, then y, then z; the texture wants the same
-        // order, so this is a straight walk rather than a shuffle.
+        // The texture is filled x-fastest, because that is the order texelFetch reads:
+        // texel (i, j, k) lives at linear offset i + 16*j + 256*k, so x varies fastest
+        // and z slowest. The Chunk's own array is the opposite (x*256 + y*16 + z), so
+        // this is a transpose, not a straight walk — walking the Chunk in its own order
+        // puts cell (x, y, z) in texel (z, y, x) and the world renders mirrored.
         staging.clear()
-        for (lx in 0 until Chunk.SIZE) {
+        for (lz in 0 until Chunk.SIZE) {
             for (ly in 0 until Chunk.SIZE) {
-                for (lz in 0 until Chunk.SIZE) {
+                for (lx in 0 until Chunk.SIZE) {
                     staging.put(chunk.getBlock(lx, ly, lz))
                     staging.put(chunk.packedLightAt(lx, ly, lz).toByte())
                 }

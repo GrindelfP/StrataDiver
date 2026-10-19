@@ -459,13 +459,19 @@ void main() {
     float jx = float(frag.x) + fract(halton(uSampleIndex + 1, 2) + rand(seed));
     float jy = float(frag.y) + fract(halton(uSampleIndex + 1, 3) + rand(seed));
 
+    // sx is the horizontal angle (it depends on the column and carries the aspect),
+    // sy the vertical angle (it depends on the row). u is the camera's up and v its
+    // right, so the ray is forward + up*sy + right*sx — the same arrangement as the
+    // CPU tracer's Basis, whose "u" is right and whose "v" is up. Handing sx to u
+    // and sy to v crosses the two angles and renders the world rotated a quarter
+    // turn: up comes out at the right and right at the bottom.
     float sx = (2.0 * jx / uResolution.x - 1.0) * uTanHalf * uAspect;
-    float sy = (1.0 - 2.0 * jy / uResolution.y) * uTanHalf;
+    float sy = (2.0 * jy / uResolution.y - 1.0) * uTanHalf;
 
     vec3 f = normalize(uFront);
     vec3 u = normalize(uUp - f * dot(uUp, f));
     vec3 v = cross(f, u);
-    vec3 d = normalize(f + u * sx + v * sy);
+    vec3 d = normalize(f + u * sy + v * sx);
     vec3 startDir = d;
 
     vec3 ray = uEye;
