@@ -75,6 +75,10 @@ class GpuTracer(
         "src/main/resources/shaders/fullscreen.vert",
         "src/main/resources/shaders/present.frag"
     )
+    private val denoiseProgram = ShaderProgram(
+        "src/main/resources/shaders/fullscreen.vert",
+        "src/main/resources/shaders/denoise.frag"
+    )
 
     /** The fullscreen quad every pass draws. Position only; UVs come from the shader. */
     private val quad = Geometry.upload(TRACE_QUAD, Geometry.POS_UV)!!
@@ -90,10 +94,41 @@ class GpuTracer(
     private var target = 0
     private var targetTexture = 0
 
+    /**
+     * The geometry and material of the first thing the camera ray met, one frame's worth.
+     *
+     * Written by the trace pass alongside the sample it produced and read by the denoise
+     * pass, which uses them to decide where a pixel's neighbourhood ends. A zero depth
+     * means the ray met no surface at all.
+     */
+    private var gbufferA = 0  // normal.xyz, depth
+    private var gbufferB = 0  // albedo.rgb, 1
+
+    /** The average after the denoise pass has had it. This is what goes to the screen. */
+    private var denoised = 0
+
     private val atlasTexture = uploadAtlas(atlasPixels)
 
     private val DEBUG_READBACK = java.lang.Boolean.getBoolean("stratadiver.gpuDebug")
     private val DEBUG_MODE = Integer.getInteger("stratadiver.gpuMode", 0)
+
+    /**
+     * Whether the guided denoise pass runs. On by default, and off with
+     * `-Dstratadiver.noDenoise` so the raw average can be compared against the cleaned one
+     * without editing anything.
+     */
+    private val DENOISE = !java.lang.Boolean.getBoolean("stratadiver.noDenoise")
+
+    /**
+     * Which colour attachments each pass writes to.
+     *
+     * The trace pass writes three (radiance, normal+depth, albedo) and the accumulation and
+     * denoise passes write one each, and `glDrawBuffers` is what tells the driver which
+     * attachments a shader's `location = N` outputs land in. Left at its default of
+     * attachment 0 only, an MRT shader silently drops the other two into nowhere.
+     */
+    private val mrtDrawBuffers = MemoryUtil.memAllocInt(3)
+    private val singleDrawBuffer = MemoryUtil.memAllocInt(1)
 
     /** Samples in the current average. Zero means nothing has been drawn. */
     var sampleCount = 0
@@ -170,12 +205,22 @@ class GpuTracer(
     private fun allocate() {
         if (width <= 0 || height <= 0) return
 
-        for (id in intArrayOf(read, write, targetTexture)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
 
         read = floatTexture()
         write = floatTexture()
         targetTexture = floatTexture()
+        gbufferA = floatTexture()
+        gbufferB = floatTexture()
+        denoised = floatTexture()
+
+        mrtDrawBuffers.clear()
+        mrtDrawBuffers.put(intArrayOf(GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2))
+        mrtDrawBuffers.flip()
+        singleDrawBuffer.clear()
+        singleDrawBuffer.put(GL_COLOR_ATTACHMENT0)
+        singleDrawBuffer.flip()
 
         target = glGenFramebuffers()
         glBindFramebuffer(GL_FRAMEBUFFER, target)
@@ -245,8 +290,12 @@ class GpuTracer(
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_BLEND)
 
-        // --- Pass 1: trace one sample per pixel into the spare accumulator ---
+        // --- Pass 1: trace one sample per pixel into the spare accumulator, with the
+        // geometry and material of the first hit written alongside it ---
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, write, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gbufferA, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gbufferB, 0)
+        glDrawBuffers(mrtDrawBuffers)
         traceProgram.use()
 
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, atlasTexture)
@@ -298,6 +347,7 @@ class GpuTracer(
         // looks right and renders black: the first frame divides nothing by nothing and
         // every frame after adds the same stale sum to itself.
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, targetTexture, 0)
+        glDrawBuffers(singleDrawBuffer)
         accumProgram.use()
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, read)
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, write)
@@ -313,6 +363,24 @@ class GpuTracer(
         targetTexture = oldRead
 
         sampleCount++
+
+        // --- Pass 3: the average, cleaned. The G-buffer pass 1 wrote is still current,
+        // and the average describes the same scene it did the last time the camera moved,
+        // so it is the right thing to smooth by. ---
+        if (DENOISE) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, denoised, 0)
+            glDrawBuffers(singleDrawBuffer)
+            denoiseProgram.use()
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, read)
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, gbufferA)
+            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, gbufferB)
+            denoiseProgram.setInt("uImage", 0)
+            denoiseProgram.setInt("uGbufferA", 1)
+            denoiseProgram.setInt("uGbufferB", 2)
+            denoiseProgram.setVec2("uTexel", 1f / width, 1f / height)
+            glBindVertexArray(quad.vao)
+            glDrawArrays(GL_TRIANGLES, 0, 6)
+        }
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
@@ -343,7 +411,7 @@ class GpuTracer(
         // rather than "the viewport was left behind".
         glViewport(0, 0, screenWidth, screenHeight)
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, read)
+        glBindTexture(GL_TEXTURE_2D, if (DENOISE) denoised else read)
         presentProgram.setInt("uImage", 0)
         presentProgram.setFloat("uExposure", PathTracer.EXPOSURE)
         glBindVertexArray(quad.vao)
@@ -378,8 +446,10 @@ class GpuTracer(
 
     fun release() {
         quad.release()
-        for (id in intArrayOf(read, write, targetTexture)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
+        MemoryUtil.memFree(mrtDrawBuffers)
+        MemoryUtil.memFree(singleDrawBuffer)
     }
 }
 

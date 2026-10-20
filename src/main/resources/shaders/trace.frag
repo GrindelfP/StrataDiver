@@ -103,7 +103,16 @@ struct Hit {
  */
 Hit gHit;
 
-out vec4 FragColor;
+// Three render targets, because the denoiser downstream needs to know what it is
+// smoothing. Radiance alone is not enough: a filter guided only by colour smears grass
+// into grass across a block edge, because two faces of the same block share a colour and
+// differ only in depth. So the trace also hands over the normal and depth of the first
+// surface the camera ray met, and that surface's albedo, and the filter is stopped by all
+// three. This is the "guided" half of the plan's denoiser, and it is why the trace pass
+// writes more than a colour.
+layout(location = 0) out vec4 oRadiance;
+layout(location = 1) out vec4 oGbufferA;  // normal.xyz, depth
+layout(location = 2) out vec4 oGbufferB;  // albedo.rgb, 1
 
 // --- Randomness ---
 
@@ -487,6 +496,8 @@ void main() {
 
     float firstDistance = -1.0;
     ivec3 firstCell = ivec3(0);
+    vec3 firstNormal = vec3(0.0);
+    vec3 firstAlbedo = vec3(0.0);
 
     int depth = 0;
     for (; depth <= MAX_DEPTH; ++depth) {
@@ -499,11 +510,6 @@ void main() {
             break;
         }
 
-        if (depth == 0) {
-            firstDistance = h.t;
-            firstCell = h.cell;
-        }
-
         // Step off the surface along its own normal before anything samples light from
         // here. A hit lands on a Cell boundary and rounding decides which side of it the
         // coordinates fall on, so a shadow ray started at the raw hit point has a good
@@ -513,6 +519,13 @@ void main() {
         vec3 p = ray + d * h.t + h.n * SURFACE_EPS;
 
         vec3 albedo = sampleArt(h.type, h.face, h.uv);
+
+        if (depth == 0) {
+            firstDistance = h.t;
+            firstCell = h.cell;
+            firstNormal = h.n;
+            firstAlbedo = albedo;
+        }
 
         float emit = float(emissionOf(h.type)) * EMISSION_SCALE;
         if (emit > 0.0) radiance += throughput * albedo * emit;
@@ -558,5 +571,16 @@ void main() {
             : vec3(0.0, 0.0, 0.2);
     }
 
-    FragColor = vec4(radiance, 1.0);
+    oRadiance = vec4(radiance, 1.0);
+    if (firstDistance > 0.0) {
+        oGbufferA = vec4(firstNormal, firstDistance);
+        oGbufferB = vec4(firstAlbedo, 1.0);
+    } else {
+        // No surface was met. A zero depth and a zero normal is the honest answer for the
+        // sky, and it matters: the sky is a smooth model with no noise of its own, and a
+        // real depth there would let the filter borrow a distant surface's depth across
+        // the horizon.
+        oGbufferA = vec4(0.0);
+        oGbufferB = vec4(0.0);
+    }
 }
