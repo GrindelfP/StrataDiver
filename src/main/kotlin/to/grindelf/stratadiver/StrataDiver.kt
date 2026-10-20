@@ -277,6 +277,13 @@ class StrataDiver {
     private var pathScale = Integer.getInteger("stratadiver.scale", DEFAULT_PATH_SCALE)
 
     /**
+     * The highest scale the adaptive controller may reach. Defaults to
+     * [PATH_SCALE_LIMIT], but can be pinned lower for a capture or a machine whose
+     * framerate matters more than its sharpness, without disabling adaptation entirely.
+     */
+    private val pathScaleMax = Integer.getInteger("stratadiver.scaleMax", PATH_SCALE_LIMIT)
+
+    /**
      * What the last frame of tracing cost, and the running average of that.
      *
      * The scale adapts on this because a path tracer has no frame budget to spend by
@@ -850,7 +857,7 @@ class StrataDiver {
         traceSamplesAveraged = 0
 
         if (moving != 0) {
-            val wanted = (pathScale + moving).coerceIn(1, PATH_SCALE_LIMIT)
+            val wanted = (pathScale + moving).coerceIn(1, pathScaleMax)
             if (wanted != pathScale) {
                 pathScale = wanted
                 // resize() discards the average, so the picture restarts at the new size

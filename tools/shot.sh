@@ -18,4 +18,4 @@ CP="$(cat target/probe-classpath.txt):target/classes"
 
 OUT=$(mktemp -d)
 kotlinc tools/Shot.kt -cp "$CP" -d "$OUT"
-java -XstartOnFirstThread -cp "$OUT:$CP" shot.ShotKt "$@"
+java -XstartOnFirstThread ${=JAVA_OPTS} -cp "$OUT:$CP" shot.ShotKt "$@"
