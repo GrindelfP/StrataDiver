@@ -116,19 +116,17 @@ class StrataDiver {
         const val DAY_SPEED: Float = QUICK_DAY_SPEED
 
         /**
-         * The window's size in *points*, and how much framebuffer each point carries.
+         * The window's size, and the size of the framebuffer it is given.
          *
-         * Everything the game draws is positioned in framebuffer pixels, and on a Retina
-         * display that is not the same number. A 1280x720 window on this machine has a
-         * 2560x1440 framebuffer, so a GUI laid out in 1280x720 coordinates occupies the
-         * bottom-left quarter of the screen while the world fills all of it — every
-         * element correct in itself and the whole HUD in the wrong place.
+         * These used to be two different numbers. On a Retina display GLFW gives a window a
+         * backing buffer twice the size in each axis, so a 1280x720 window was 2560x1440,
+         * and everything positioned in framebuffer pixels — the GUI above all — was laid
+         * out at half the scale it was drawn at. The Retina buffer is now turned off (see
+         * `init`), so the two agree.
          *
-         * So the two numbers are kept apart deliberately: [WINDOW_WIDTH] is what is asked
-         * for, and [screenWidth]/[screenHeight] are what the display actually gave, read
-         * from the driver after the context exists. Guessing the ratio is the mistake —
-         * moving the game to a non-Retina monitor, or to a Mac with a different one, would
-         * silently move the HUD again.
+         * They are still kept apart, and [screenWidth]/[screenHeight] are still read from
+         * the driver rather than assumed: a window can be resized, and a machine that does
+         * not honour the hint still has to be laid out in the pixels it actually has.
          */
         private const val WINDOW_WIDTH = 1280f
         private const val WINDOW_HEIGHT = 720f
@@ -146,13 +144,14 @@ class StrataDiver {
          * How much slower the path tracer renders than the window is, before it starts
          * adapting on its own.
          *
-         * A path tracer is not a thing you can render at any resolution at any speed; it is
-         * a thing you render at whatever resolution the machine can afford and average until
-         * it is good enough. Two is a reasonable middle: soft shadows and colour bleed are
-         * low-frequency and survive being traced small, while the 16x16 art is re-sampled
-         * per ray and does not care about the resolution at all.
+         * One, which is to say not at all: the trace buffer is the window, pixel for pixel.
+         * A path tracer is not a thing you can render at any resolution at any speed, but
+         * this one is not allowed to be a thing you cannot look at either — the whole point
+         * of the GPU port was a pristine picture, and every division of the resolution is a
+         * blur that has to be un-blurred again. The cost is real (see [PATH_SCALE_LIMIT])
+         * and is paid on purpose.
          */
-        private const val DEFAULT_PATH_SCALE = 2
+        private const val DEFAULT_PATH_SCALE = 1
 
         /**
          * What the adaptive resolution aims for, per frame, in milliseconds.
@@ -165,8 +164,16 @@ class StrataDiver {
          */
         private const val PATH_BUDGET_MS = 16.7
 
-        /** How far the resolution may fall before it stops falling. */
-        private const val PATH_SCALE_LIMIT = 4
+        /**
+         * How far the resolution may fall before it stops falling.
+         *
+         * One, so it does not fall at all: the traced image is the window's own 1280x720,
+         * and the adaptive controller is left in place only so a machine that cannot afford
+         * it can still ask for less without editing this. The trade is stated plainly —
+         * 1280x720 costs about 40 ms of trace per frame, which is ~25 fps, and the picture
+         * is bought with those frames rather than with a blur.
+         */
+        private const val PATH_SCALE_LIMIT = 1
 
         /**
          * How many frames of tracing stand between two decisions about the resolution.
@@ -216,7 +223,9 @@ class StrataDiver {
     /**
      * The framebuffer's real size in pixels, read from the driver once the context exists.
      *
-     * Not the window size, and not the requested size: the number the GPU actually has.
+     * Not the window size, and not the requested size: the number the GPU actually has. With
+     * the Retina buffer off this is the window's own 1280x720, which is what makes the
+     * traced image land 1:1 with it.
      */
     private var screenWidth = WINDOW_WIDTH
     private var screenHeight = WINDOW_HEIGHT
@@ -439,6 +448,17 @@ class StrataDiver {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE)
 
+        // The window is asked for 1280x720 and the framebuffer is 1280x720 too.
+        //
+        // On a Retina display GLFW hands a window a backing buffer twice the size in each
+        // axis by default, so the same window was 2560x1440 and every traced pixel was
+        // stretched four times on its way to the screen. That stretch is the "myopia": it
+        // softens the whole image and, because the GUI is laid out in framebuffer pixels,
+        // it also made the GUI half the size it was drawn at. Turning the Retina buffer off
+        // makes the traced image land 1:1 with the window, which is what "render 720 and show
+        // 720" means, and it is a hint macOS ignores on any other platform.
+        glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE)
+
         window = glfwCreateWindow(1280, 720, "StrataDiver", NULL, NULL)
         if (window == NULL) throw RuntimeException("Failed to create the GLFW window")
 
@@ -448,17 +468,23 @@ class StrataDiver {
 
         GL.createCapabilities()
 
-        // The size the GPU actually gave us, which on a Retina display is not the size that
-        // was asked for. Everything below is laid out in these pixels: the GUI, the traced
-        // image's stretch, and the viewport. Read after the context exists, because before
-        // it there is no framebuffer to ask.
+        // The size the GL surface is actually drawn at, which is what the traced image and
+        // the GUI have to match.
+        //
+        // Not glfwGetFramebufferSize. On a Retina display that reports the *window's backing
+        // size*, 2560x1440, even when the Retina framebuffer hint is off and the surface the
+        // GL context renders into is the window's own 1280x720. Measured, not assumed: with
+        // the hint off, clearing the viewport and reading it back gives 921,600 pixels, not
+        // 3,686,400, while glfwGetFramebufferSize still answers 2560x1440. Reading the
+        // framebuffer size here would therefore lay the HUD out at twice the scale it is
+        // drawn at — the same failure the Retina work fixed, one number the other way.
         val fw = IntArray(1)
         val fh = IntArray(1)
-        glfwGetFramebufferSize(window, fw, fh)
+        glfwGetWindowSize(window, fw, fh)
         screenWidth = fw[0].toFloat()
         screenHeight = fh[0].toFloat()
         glViewport(0, 0, fw[0], fh[0])
-        println("framebuffer ${fw[0]}x${fh[0]} (window asked for ${WINDOW_WIDTH.toInt()}x${WINDOW_HEIGHT.toInt()})")
+        println("gl surface ${fw[0]}x${fh[0]} (window asked for ${WINDOW_WIDTH.toInt()}x${WINDOW_HEIGHT.toInt()})")
 
         layout = SlotLayout(screenWidth, screenHeight)
 
