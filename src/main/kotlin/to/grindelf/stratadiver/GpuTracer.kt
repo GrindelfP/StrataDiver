@@ -120,6 +120,14 @@ class GpuTracer(
     private val DENOISE = !java.lang.Boolean.getBoolean("stratadiver.noDenoise")
 
     /**
+     * How much edge to put back, as a fraction of the difference between a pixel and its
+     * neighbourhood mean. Tunable with `-Dstratadiver.sharpen=N`; 0 turns it off. A fixed
+     * amount rather than an adaptive one, because the image is 1:1 with the window and the
+     * radius is one pixel, so there is nothing to adapt to.
+     */
+    private val SHARPEN = Integer.getInteger("stratadiver.sharpen", 40) / 100f
+
+    /**
      * Which colour attachments each pass writes to.
      *
      * The trace pass writes three (radiance, normal+depth, albedo) and the accumulation and
@@ -414,6 +422,8 @@ class GpuTracer(
         glBindTexture(GL_TEXTURE_2D, if (DENOISE) denoised else read)
         presentProgram.setInt("uImage", 0)
         presentProgram.setFloat("uExposure", PathTracer.EXPOSURE)
+        presentProgram.setVec2("uTexel", 1f / screenWidth, 1f / screenHeight)
+        presentProgram.setFloat("uSharpen", SHARPEN)
         glBindVertexArray(quad.vao)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glEnable(GL_DEPTH_TEST)

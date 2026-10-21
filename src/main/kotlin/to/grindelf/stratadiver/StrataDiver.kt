@@ -340,6 +340,12 @@ class StrataDiver {
         get() = if (inventoryOpen) ControlMode.INTERACTIVE else ControlMode.GAMEPLAY
 
     /**
+     * Debug: throw the average away every frame, to look at the single-sample case that a
+     * moving camera actually sees. Off by default; on with `-Dstratadiver.forceReset`.
+     */
+    private val FORCE_RESET = java.lang.Boolean.getBoolean("stratadiver.forceReset")
+
+    /**
      * Runs the game for [frames] frames and writes a PNG of the last one, then returns.
      *
      * This is a rendering test rig, and it exists because of the project's oldest lesson:
@@ -837,6 +843,7 @@ class StrataDiver {
      * well defended against.
      */
     private fun sceneHasMoved(): Boolean {
+        if (FORCE_RESET) return true
         if (!haveLastEye) return true
         if (streamer.version != lastTraceVersion) return true
         // An item appearing or being collected changes what is in the world. An item
