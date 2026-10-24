@@ -1,7 +1,11 @@
 package to.grindelf.stratadiver
 
 import org.joml.Matrix4f
+import org.joml.Vector3f
+import org.joml.Vector3i
+import org.joml.Vector4f
 import org.lwjgl.opengl.GL11.GL_DEPTH_TEST
+import org.lwjgl.opengl.GL11.GL_LINES
 import org.lwjgl.opengl.GL11.GL_TEXTURE_2D
 import org.lwjgl.opengl.GL11.GL_TRIANGLES
 import org.lwjgl.opengl.GL11.glBindTexture
@@ -15,6 +19,12 @@ import org.lwjgl.opengl.GL30.glBindVertexArray
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import kotlin.math.atan
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
+import kotlin.math.tan
 
 /**
  * Drawing in screen space: flat quads, one orthographic projection, no lighting.
@@ -196,5 +206,138 @@ class UiPass(
     fun release() {
         quad.release()
         square.release()
+    }
+
+    // --- Selection box (wireframe cube in screen space) ---
+
+    /**
+     * Projects a 3D world point to 2D screen coordinates using the same view/projection
+     * as the path tracer's Camera/Basis.
+     */
+    private fun projectToScreen(
+        worldX: Float, worldY: Float, worldZ: Float,
+        eye: Vector3f, front: Vector3f, up: Vector3f,
+        fovDegrees: Float, aspect: Float,
+        screenWidth: Float, screenHeight: Float
+    ): Vector3f {
+        // Build view matrix (same as PathTracer.Basis)
+        val forward = Vector3f(front).normalize()
+        var right = Vector3f().cross(forward, up)
+        val rightLen = right.length()
+        if (rightLen < 1e-4f) {
+            // Degenerate: looking straight up/down, use a substitute up
+            right = Vector3f().cross(forward, Vector3f(0f, 0f, 1f))
+        }
+        right.normalize()
+        val trueUp = Vector3f().cross(right, forward)
+
+        // View matrix: world -> view space
+        val view = Matrix4f()
+        view.set(
+            right.x, trueUp.x, -forward.x, 0f,
+            right.y, trueUp.y, -forward.y, 0f,
+            right.z, trueUp.z, -forward.z, 0f,
+            -right.dot(eye), -trueUp.dot(eye), forward.dot(eye), 1f
+        )
+
+        // Projection matrix: view -> clip space
+        val tanHalf = tan((fovDegrees / 2f) * Math.PI / 180f).toFloat()
+        val proj = Matrix4f().perspective(
+            2f * atan(tanHalf).toFloat(), // vertical FOV
+            aspect,
+            0.01f, // near
+            1000f  // far
+        )
+
+        // View-projection matrix
+        val viewProj = Matrix4f(proj).mul(view)
+
+        // Transform world point to clip space (vec4)
+        val world = Vector4f(worldX, worldY, worldZ, 1f)
+        val clip = Vector4f()
+        viewProj.transform(world, clip)
+
+        // Perspective divide + viewport transform
+        val invW = 1f / clip.w
+        val ndcX = clip.x * invW
+        val ndcY = clip.y * invW
+        val screenX = (ndcX + 1f) * 0.5f * screenWidth
+        val screenY = (1f - ndcY) * 0.5f * screenHeight // flip Y for screen coords (0 at top)
+        val depth = clip.z * invW
+
+        return Vector3f(screenX, screenY, depth)
+    }
+
+    /**
+     * Draws the wireframe selection box around the aimed block in screen space.
+     * Projects the 8 corners of the block and draws the 12 edges.
+     */
+    fun drawSelectionBox(
+        eye: Vector3f, front: Vector3f, up: Vector3f,
+        fovDegrees: Float, aspect: Float,
+        aimedBlock: Vector3i?
+    ) {
+        aimedBlock ?: return
+
+        // 8 corners of the block (min to max)
+        val corners = arrayOf(
+            Vector3f(aimedBlock.x.toFloat(), aimedBlock.y.toFloat(), aimedBlock.z.toFloat()),
+            Vector3f(aimedBlock.x.toFloat() + 1f, aimedBlock.y.toFloat(), aimedBlock.z.toFloat()),
+            Vector3f(aimedBlock.x.toFloat() + 1f, aimedBlock.y.toFloat() + 1f, aimedBlock.z.toFloat()),
+            Vector3f(aimedBlock.x.toFloat(), aimedBlock.y.toFloat() + 1f, aimedBlock.z.toFloat()),
+            Vector3f(aimedBlock.x.toFloat(), aimedBlock.y.toFloat(), aimedBlock.z.toFloat() + 1f),
+            Vector3f(aimedBlock.x.toFloat() + 1f, aimedBlock.y.toFloat(), aimedBlock.z.toFloat() + 1f),
+            Vector3f(aimedBlock.x.toFloat() + 1f, aimedBlock.y.toFloat() + 1f, aimedBlock.z.toFloat() + 1f),
+            Vector3f(aimedBlock.x.toFloat(), aimedBlock.y.toFloat() + 1f, aimedBlock.z.toFloat() + 1f)
+        )
+
+        // Project all corners to screen space
+        val screenCorners = corners.map { c ->
+            projectToScreen(c.x, c.y, c.z, eye, front, up, fovDegrees, aspect, width, height)
+        }
+
+        // 12 edges of a cube (pairs of corner indices)
+        val edges = intArrayOf(
+            0, 1,  1, 2,  2, 3,  3, 0,  // bottom face
+            4, 5,  5, 6,  6, 7,  7, 4,  // top face
+            0, 4,  1, 5,  2, 6,  3, 7   // vertical edges
+        )
+
+        // Draw each edge as a line using the LINE tile (white)
+        // We need to draw thin quads along each edge since we only have triangle drawing
+        // For a proper wireframe, we'd use GL_LINES, but we can approximate with thin quads
+        begin()
+        for (i in 0 until edges.size step 2) {
+            val a = screenCorners[edges[i]]
+            val b = screenCorners[edges[i + 1]]
+            drawLine(a.x, a.y, b.x, b.y, 1.5f) // 1.5px thick line
+        }
+        end()
+    }
+
+    /**
+     * Draws a line from (x1,y1) to (x2,y2) with given thickness using the LINE tile.
+     * Approximates a line with a thin rotated quad.
+     */
+    private fun drawLine(x1: Float, y1: Float, x2: Float, y2: Float, thickness: Float) {
+        val dx = x2 - x1
+        val dy = y2 - y1
+        val len = sqrt(dx * dx + dy * dy)
+        if (len < 0.5f) return
+
+        val cx = (x1 + x2) * 0.5f
+        val cy = (y1 + y2) * 0.5f
+        val angle = atan2(dy, dx).toFloat()
+
+        val model = Matrix4f()
+            .translate(cx, cy, 0f)
+            .rotateZ(angle)
+            .scale(len, thickness, 1f)
+
+        shader.setMatrix("model", model)
+        shader.setVec2("uvOffset", Atlas.LINE.tx.toFloat(), Atlas.LINE.ty.toFloat())
+        shader.setTint(1f)
+        glBindVertexArray(quad.vao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
     }
 }

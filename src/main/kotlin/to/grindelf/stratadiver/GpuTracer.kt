@@ -288,8 +288,7 @@ class GpuTracer(
         aspect: Float,
         sunDir: Vector3f,
         moonDir: Vector3f,
-        daylight: Float,
-        selection: Vector3i?
+        daylight: Float
     ) {
         if (width <= 0 || height <= 0) return
 
@@ -335,16 +334,6 @@ class GpuTracer(
         glUniform4iv(traceProgram.uniform("uEmission"), emissionTable)
         glUniform4iv(traceProgram.uniform("uAttenuation"), attenuationTable)
         glUniform4fv(traceProgram.uniform("uTileUV"), tileUV)
-
-        if (selection != null) {
-            traceProgram.setVec3(
-                "uSelection",
-                selection.x.toFloat(), selection.y.toFloat(), selection.z.toFloat()
-            )
-            traceProgram.setFloat("uSelectionOn", 1f)
-        } else {
-            traceProgram.setFloat("uSelectionOn", 0f)
-        }
 
         glBindVertexArray(quad.vao)
         glDrawArrays(GL_TRIANGLES, 0, 6)

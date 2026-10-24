@@ -39,9 +39,6 @@ uniform float uDaylight;
 uniform int uSampleIndex;
 uniform int uSampleCount;
 
-uniform vec3 uSelection;   // the Cell being aimed at
-uniform float uSelectionOn;
-
 /**
  * What to show instead of the picture.
  *
@@ -63,7 +60,6 @@ const float EMISSION_RADIANCE = 6.0;
 const float FOG_DENSITY = 0.002;
 const float FIREFLY_CLAMP = 12.0;
 const float SURFACE_EPS = 1e-3;
-const float LINE_HALF_WIDTH = 0.008;
 const float INV_PI = 0.31830988618;
 const float SKY_MIS_WEIGHT = 0.5;
 const float EMISSION_SCALE = EMISSION_RADIANCE / 15.0;
@@ -430,44 +426,6 @@ vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo) {
     return min(result, vec3(FIREFLY_CLAMP));
 }
 
-/**
- * The wireframe around the Cell being aimed at.
- *
- * The last thing in the pixel, and deliberately not a surface: it stops nothing, lights
- * nothing, and would be nonsense if it scattered. Like everything else it is a screen-space
- * coverage rather than a surface the ray hits, because there is no depth buffer behind the
- * picture for anything to sort against.
- */
-float selectionCoverage(vec3 origin, vec3 dir, float tLimit) {
-    if (uSelectionOn < 0.5) return 0.0;
-
-    vec3 cell = uSelection;
-    // Entry into the Cell's box.
-    vec3 inv = 1.0 / dir;
-    vec3 t0 = (cell - origin) * inv;
-    vec3 t1 = (cell + 1.0 - origin) * inv;
-    vec3 lo = min(t0, t1), hi = max(t0, t1);
-    float tEnter = max(max(lo.x, lo.y), lo.z);
-    float tExit = min(min(hi.x, hi.y), hi.z);
-    if (tEnter > tExit || tExit < 0.0) return 0.0;
-    if (tEnter > tLimit) return 0.0;
-
-    vec3 p = origin + dir * tEnter - cell;
-    // Which face was entered, so the other two axes span it.
-    vec3 fromFace = vec3(p.x, p.y, p.z);
-    if (tEnter == lo.x) fromFace.y = 0.0, fromFace.z = 0.0;
-    else if (tEnter == lo.y) fromFace.x = 0.0, fromFace.z = 0.0;
-    else fromFace.x = 0.0, fromFace.y = 0.0;
-
-    float toEdge = 1.0;
-    for (int i = 0; i < 3; ++i) {
-        if (fromFace[i] > 0.0) toEdge = min(toEdge, min(fromFace[i], 1.0 - fromFace[i]));
-    }
-
-    float pixel = 2.0 * uTanHalf * max(tEnter, 1e-3) / uResolution.y;
-    return clamp(0.5 + (LINE_HALF_WIDTH - toEdge) / max(pixel, 1e-6), 0.0, 1.0);
-}
-
 void main() {
     ivec2 frag = ivec2(gl_FragCoord.xy);
     uint seed = seedOf(uvec3(frag, uint(uSampleIndex)));
@@ -552,9 +510,6 @@ void main() {
             radiance = radiance * transmittance + haze * (1.0 - transmittance);
         }
     }
-
-    float cover = selectionCoverage(uEye, startDir, firstDistance > 0.0 ? firstDistance : MAX_DISTANCE);
-    radiance += (vec3(1.0) - radiance) * cover;
 
     if (uDebug == 1) {
         // The first thing the camera ray met, unlit. Not a bounce: this is about whether

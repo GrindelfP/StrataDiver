@@ -761,6 +761,9 @@ class StrataDiver {
         drawTracedWorld(sunDir)
         frameTimes.stage(STAGE_PRESENT)
 
+        // Selection box (wireframe) in GUI pass — drawn before other HUD so it sits behind hotbar/inventory
+        ui.drawSelectionBox(player.position, player.front, player.up, FOV_DEGREES, screenWidth / screenHeight, aimedAt?.blockPos)
+
         // The GUI goes last and flat, over the picture.
         Hud.minimap(ui, minimapTexture, minimap, player, MINIMAP_DIAMETER, MINIMAP_MARGIN)
         Hud.crosshair(ui)
@@ -824,8 +827,7 @@ class StrataDiver {
         gpu.sample(
             player.position, player.front, player.up,
             FOV_DEGREES, screenWidth / screenHeight,
-            normalisedSun, moonDir, daylight,
-            aimedAt?.blockPos
+            normalisedSun, moonDir, daylight
         )
         frameTimes.stage(STAGE_TRACE)
 

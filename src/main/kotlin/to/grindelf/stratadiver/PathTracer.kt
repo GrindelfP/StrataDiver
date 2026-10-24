@@ -154,9 +154,6 @@ class PathTracer(
          */
         const val FIREFLY_CLAMP = 12f
 
-        /** Half the width of the wireframe around the Cell being aimed at, in Cells. */
-        const val LINE_HALF_WIDTH = 0.008f
-
         /**
          * How far off a surface a ray leaves it, in Cells.
          *
@@ -166,9 +163,6 @@ class PathTracer(
          * [trace], where the reason is given.
          */
         const val SURFACE_EPS = 1e-3f
-
-        /** How far that box is inflated, so the outline never fights the face it outlines. */
-        private const val BOX_INFLATE = 0.004f
 
         private const val INV_PI = 1f / 3.14159265f
         private const val TWO_PI = 6.28318531f
@@ -493,21 +487,7 @@ class PathTracer(
             }
         }
 
-        // The wireframe around the Cell being aimed at. The last thing in the pixel, and
-        // deliberately not a surface: it stops nothing, lights nothing, and would be nonsense
-        // if it scattered.
-        scene.selection?.let { cell ->
-            val limit = if (firstDistance >= 0f) firstDistance else MAX_DISTANCE
-            val coverage = selectionCoverage(
-                cell, eyeX, eyeY, eyeZ, startX, startY, startZ, limit, basis.tanHalf, height
-            )
-            if (coverage > 0f) {
-                out[0] += (1f - out[0]) * coverage
-                out[1] += (1f - out[1]) * coverage
-                out[2] += (1f - out[2]) * coverage
-            }
         }
-    }
 
     // --- Finding the surface ---
 
@@ -901,89 +881,6 @@ class PathTracer(
             WEST -> { into[0] = c; into[1] = b }
             else -> { into[0] = 1f - c; into[1] = b }
         }
-    }
-
-    // --- The wireframe ---
-
-    /**
-     * How much of this pixel the selection box's outline covers.
-     *
-     * Both the face the ray enters and the face it leaves are tested, because a wireframe is
-     * see-through: the far edges are visible past the near ones. The width is a fraction of a
-     * pixel at the box's own distance, so it stays a line at any range instead of vanishing
-     * or turning into a wall.
-     */
-    private fun selectionCoverage(
-        cell: Vector3i, ox: Float, oy: Float, oz: Float,
-        dx: Float, dy: Float, dz: Float, limit: Float,
-        tanHalf: Float, height: Int
-    ): Float {
-        val minX = cell.x - BOX_INFLATE
-        val minY = cell.y - BOX_INFLATE
-        val minZ = cell.z - BOX_INFLATE
-        val maxX = cell.x + 1f + BOX_INFLATE
-        val maxY = cell.y + 1f + BOX_INFLATE
-        val maxZ = cell.z + 1f + BOX_INFLATE
-
-        var tEnter = 0f
-        var tExit = limit
-        var enterAxis = 0
-        var enterSign = 0f
-
-        for (axis in 0 until 3) {
-            val o = when (axis) { 0 -> ox; 1 -> oy; else -> oz }
-            val d = when (axis) { 0 -> dx; 1 -> dy; else -> dz }
-            val lo = when (axis) { 0 -> minX; 1 -> minY; else -> minZ }
-            val hi = when (axis) { 0 -> maxX; 1 -> maxY; else -> maxZ }
-            if (abs(d) < 1e-8f) {
-                if (o < lo || o > hi) return 0f
-                continue
-            }
-            val t1 = (lo - o) / d
-            val t2 = (hi - o) / d
-            val near = minOf(t1, t2)
-            val far = maxOf(t1, t2)
-            if (near > tEnter) {
-                tEnter = near
-                enterAxis = axis
-                enterSign = if (t1 < t2) -1f else 1f
-            }
-            if (far < tExit) tExit = far
-            if (tEnter > tExit) return 0f
-        }
-        if (tEnter >= limit) return 0f
-
-        var best = edgeCoverage(
-            cell, ox + dx * tEnter, oy + dy * tEnter, oz + dz * tEnter,
-            enterAxis, tanHalf, height, tEnter
-        )
-        if (tExit > 0f && tExit < limit && tExit > tEnter) {
-            val back = edgeCoverage(
-                cell, ox + dx * tExit, oy + dy * tExit, oz + dz * tExit,
-                enterAxis, tanHalf, height, tExit
-            )
-            if (back > best) best = back
-        }
-        return best
-    }
-
-    /** One face of the box: how close this point on it is to that face's border. */
-    private fun edgeCoverage(
-        cell: Vector3i, px: Float, py: Float, pz: Float,
-        axis: Int, tanHalf: Float, height: Int, t: Float
-    ): Float {
-        var a: Float
-        var b: Float
-        when (axis) {
-            0 -> { a = pz - cell.z; b = py - cell.y }
-            1 -> { a = px - cell.x; b = pz - cell.z }
-            else -> { a = px - cell.x; b = py - cell.y }
-        }
-        val toEdge = minOf(minOf(a, 1f - a), minOf(b, 1f - b)).coerceIn(0f, 1f)
-
-        // How wide one pixel is, in Cells, at the distance this edge is seen from.
-        val pixel = 2f * tanHalf * maxOf(t, 1e-3f) / height
-        return (0.5f + (LINE_HALF_WIDTH - toEdge) / maxOf(pixel, 1e-6f)).coerceIn(0f, 1f)
     }
 
     // --- Out ---
