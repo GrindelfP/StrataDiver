@@ -445,8 +445,18 @@ void main() {
     float sx = (2.0 * jx / uResolution.x - 1.0) * uTanHalf * uAspect;
     float sy = (2.0 * jy / uResolution.y - 1.0) * uTanHalf;
 
+    // Build camera basis with degenerate-case handling (same as CPU PathTracer.Basis).
+    // When looking straight up/down, forward and up are parallel -> right vector is zero.
     vec3 f = normalize(uFront);
-    vec3 u = normalize(uUp - f * dot(uUp, f));
+    vec3 u = uUp - f * dot(uUp, f);
+    float uLen = length(u);
+    if (uLen < 1e-4) {
+        // Substitute an up vector not parallel to forward.
+        vec3 upSub = abs(f.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        u = upSub - f * dot(upSub, f);
+        uLen = length(u);
+    }
+    u = u / uLen;
     vec3 v = cross(f, u);
     vec3 d = normalize(f + u * sy + v * sx);
     vec3 startDir = d;
