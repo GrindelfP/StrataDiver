@@ -111,8 +111,10 @@ class GpuTracer(
     /** The average after the denoise pass has had it. This is what goes to the screen. */
     private var denoised = 0
 
-    /** Temporal history buffer for EMA smoothing. Updated after denoise, read by present. */
+    /** Temporal history buffer for EMA smoothing (read). Updated after denoise, read by present. */
     private var history = 0
+    /** Ping-pong target for EMA pass to avoid read-write hazard on history texture. */
+    private var historyNext = 0
 
     private val atlasTexture = uploadAtlas(atlasPixels)
 
@@ -226,7 +228,7 @@ class GpuTracer(
     private fun allocate() {
         if (width <= 0 || height <= 0) return
 
-        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
 
         read = floatTexture()
@@ -236,6 +238,7 @@ class GpuTracer(
         gbufferB = floatTexture()
         denoised = floatTexture()
         history = floatTexture()
+        historyNext = floatTexture()
 
         mrtDrawBuffers.clear()
         mrtDrawBuffers.put(intArrayOf(GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2))
@@ -259,6 +262,7 @@ class GpuTracer(
         clearAccumulator(read)
         clearAccumulator(write)
         clearAccumulator(history)
+        clearAccumulator(historyNext)
     }
 
     private fun floatTexture(): Int {
@@ -293,6 +297,7 @@ class GpuTracer(
     fun reset() {
         sampleCount = 0
         clearAccumulator(history)
+        clearAccumulator(historyNext)
     }
 
     /** Traces one sample per pixel and folds it into the average. */
@@ -395,11 +400,12 @@ class GpuTracer(
             glDrawArrays(GL_TRIANGLES, 0, 6)
         }
 
-        // --- Pass 4: temporal EMA — history = lerp(history, denoised, alpha) ---
+        // --- Pass 4: temporal EMA — historyNext = lerp(history, denoised, alpha) ---
         // This smooths the image over time, reducing grain while moving.
         // On reset (camera/world change), history is cleared so no ghosting persists.
+        // Ping-pong between history and historyNext to avoid read-write hazard.
         val source = if (DENOISE) denoised else read
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, history, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, historyNext, 0)
         glDrawBuffers(singleDrawBuffer)
         emaProgram.use()
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, source)
@@ -409,6 +415,11 @@ class GpuTracer(
         emaProgram.setFloat("uAlpha", TEMPORAL_ALPHA)
         glBindVertexArray(quad.vao)
         glDrawArrays(GL_TRIANGLES, 0, 6)
+
+        // Swap: historyNext becomes the new history for next frame and for present
+        val tmp = history
+        history = historyNext
+        historyNext = tmp
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
@@ -476,7 +487,7 @@ class GpuTracer(
 
     fun release() {
         quad.release()
-        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
         MemoryUtil.memFree(mrtDrawBuffers)
         MemoryUtil.memFree(singleDrawBuffer)
