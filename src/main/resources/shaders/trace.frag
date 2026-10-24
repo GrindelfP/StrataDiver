@@ -51,14 +51,14 @@ uniform int uSampleCount;
 uniform int uDebug;
 
 const float MAX_DISTANCE = 128.0;
-const int MAX_DEPTH = 5;
-const int RR_START = 3;
+const int MAX_DEPTH = 4;
+const int RR_START = 2;
 const float SUN_ANGLE = 0.035;
 const float SUN_IRRADIANCE = 3.2;
 const float MOON_IRRADIANCE = 0.035;
 const float EMISSION_RADIANCE = 6.0;
 const float FOG_DENSITY = 0.002;
-const float FIREFLY_CLAMP = 12.0;
+const float FIREFLY_CLAMP = 10.0;
 const float SURFACE_EPS = 1e-3;
 const float INV_PI = 0.31830988618;
 const float SKY_MIS_WEIGHT = 0.5;
@@ -378,7 +378,7 @@ bool occluded(vec3 o, vec3 d, float maxT) {
  * sharpens as the average accumulates. The real Sun's half-degree disc would need thousands
  * of samples to stop looking like static, so [SUN_ANGLE] is four times it, deliberately.
  */
-vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo) {
+vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo, int depth) {
     vec3 result = vec3(0.0);
 
     // The disc's solid angle, spread over which the Sun's and the Moon's power becomes a
@@ -417,9 +417,12 @@ vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo) {
     // The sky: one cosine-weighted sample, and the cosine and the 1/pi of the pdf cancel
     // exactly. The other half of this integral is the bounce that escapes, and MIS is what
     // stops the two halves counting the sky twice.
-    vec3 w = cosineHemisphere(s, n);
-    if (!occluded(p, w, MAX_DISTANCE)) {
-        result += albedo * SKY_MIS_WEIGHT * skyRadiance(w, false);
+    // Skip sky sample on bounces >= 3 (depth >= 3) to save cost — indirect sky is weak.
+    if (depth < 3) {
+        vec3 w = cosineHemisphere(s, n);
+        if (!occluded(p, w, MAX_DISTANCE)) {
+            result += albedo * SKY_MIS_WEIGHT * skyRadiance(w, false);
+        }
     }
 
     // Fireflies are born here and nowhere else, so this is where the clamp belongs.
@@ -488,11 +491,14 @@ void main() {
         float emit = float(emissionOf(h.type)) * EMISSION_SCALE;
         if (emit > 0.0) radiance += throughput * albedo * emit;
 
-        radiance += throughput * directLight(seed, p, h.n, albedo);
+        radiance += throughput * directLight(seed, p, h.n, albedo, depth);
 
         d = cosineHemisphere(seed, h.n);
         throughput *= albedo;
         ray = p;
+
+        // Early exit: if throughput is negligible, further bounces contribute nothing.
+        if (max(throughput.r, max(throughput.g, throughput.b)) < 0.01) break;
 
         if (depth + 1 >= RR_START) {
             float keep = max(albedo.r, max(albedo.g, albedo.b));

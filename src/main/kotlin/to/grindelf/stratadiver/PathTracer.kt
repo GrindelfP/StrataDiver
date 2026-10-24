@@ -92,16 +92,16 @@ class PathTracer(
         /**
          * How many times a ray may bounce.
          *
-         * Five is a judgement about a world of Lambertian surfaces: every bounce loses the
-         * albedo it reflected off, so by the fourth the light arriving has already fallen
-         * below a part in a thousand. Deeper bounces are still traced — they are what a room
+         * Four is a judgement about a world of Lambertian surfaces: every bounce loses the
+         * albedo it reflected off, so by the third the light arriving has already fallen
+         * well below a part in a thousand. Deeper bounces are still traced — they are what a room
          * lit through one doorway looks like — but past [RR_START] they are traded against
          * cost by Russian roulette.
          */
-        const val MAX_DEPTH = 5
+        const val MAX_DEPTH = 4
 
         /** Bounces before the roulette starts. See [MAX_DEPTH]. */
-        const val RR_START = 3
+        const val RR_START = 2
 
         /**
          * The Sun's angular radius, in radians.
@@ -152,7 +152,7 @@ class PathTracer(
          * takes a hundred frames to wash out. Everything above this is light the tracer
          * could not have resolved at any sample count this machine could afford.
          */
-        const val FIREFLY_CLAMP = 12f
+        const val FIREFLY_CLAMP = 10f
 
         /**
          * How far off a surface a ray leaves it, in Cells.
@@ -431,7 +431,7 @@ class PathTracer(
             }
 
             // Direct: the Sun, the Moon and the sky, asked for rather than stumbled into.
-            val direct = directLight(ctx, scene, emitters, rng, px, py, pz, nx, ny, nz, aR, aG, aB)
+            val direct = directLight(ctx, scene, emitters, rng, px, py, pz, nx, ny, nz, aR, aG, aB, depth)
             r += thR * direct[0]
             g += thG * direct[1]
             b += thB * direct[2]
@@ -443,6 +443,9 @@ class PathTracer(
 
             dx = ctx.dir[0]; dy = ctx.dir[1]; dz = ctx.dir[2]
             thR *= aR; thG *= aG; thB *= aB
+
+            // Early exit: if throughput is negligible, further bounces contribute nothing.
+            if (maxOf(thR, maxOf(thG, thB)) < 0.01f) break
 
             // Already standing off the surface, for the reason given above.
             ox = px; oy = py; oz = pz
@@ -700,7 +703,8 @@ class PathTracer(
     private fun directLight(
         ctx: Context, scene: TraceScene, emitters: Emitters, rng: Rng,
         px: Float, py: Float, pz: Float, nx: Float, ny: Float, nz: Float,
-        aR: Float, aG: Float, aB: Float
+        aR: Float, aG: Float, aB: Float,
+        depth: Int
     ): FloatArray {
         val out = ctx.direct
         out[0] = 0f; out[1] = 0f; out[2] = 0f
@@ -735,14 +739,17 @@ class PathTracer(
         // because the direction was drawn to match the BRDF. That is why no division appears
         // here. The other half of this integral is the bounce that escapes, and MIS is what
         // stops the two halves from counting the sky twice.
-        cosineHemisphere(rng, nx, ny, nz, ctx.dir)
-        val wx = ctx.dir[0]; val wy = ctx.dir[1]; val wz = ctx.dir[2]
+        // Skip sky sample on bounces >= 3 (depth >= 3) to save cost — indirect sky is weak.
+        if (depth < 3) {
+            cosineHemisphere(rng, nx, ny, nz, ctx.dir)
+            val wx = ctx.dir[0]; val wy = ctx.dir[1]; val wz = ctx.dir[2]
 
-        if (!occluded(ctx, scene, px, py, pz, wx, wy, wz, MAX_DISTANCE)) {
-            val sky = skyRadiance(ctx, emitters, wx, wy, wz, withSun = false)
-            out[0] += aR * SKY_MIS_WEIGHT * sky[0]
-            out[1] += aG * SKY_MIS_WEIGHT * sky[1]
-            out[2] += aB * SKY_MIS_WEIGHT * sky[2]
+            if (!occluded(ctx, scene, px, py, pz, wx, wy, wz, MAX_DISTANCE)) {
+                val sky = skyRadiance(ctx, emitters, wx, wy, wz, withSun = false)
+                out[0] += aR * SKY_MIS_WEIGHT * sky[0]
+                out[1] += aG * SKY_MIS_WEIGHT * sky[1]
+                out[2] += aB * SKY_MIS_WEIGHT * sky[2]
+            }
         }
 
         // Fireflies are born in this function and nowhere else, so this is where the clamp
