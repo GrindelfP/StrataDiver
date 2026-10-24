@@ -445,21 +445,28 @@ void main() {
     float sx = (2.0 * jx / uResolution.x - 1.0) * uTanHalf * uAspect;
     float sy = (2.0 * jy / uResolution.y - 1.0) * uTanHalf;
 
-    // Build camera basis with degenerate-case handling (same as CPU PathTracer.Basis).
-    // When looking straight up/down, forward and up are parallel -> right vector is zero.
-    // CPU Basis: right = forward x up, up = right x forward. Ray: f + right*sx + up*sy.
+    // Build camera basis matching CPU PathTracer.Basis exactly.
+    // Right = forward x world_up. Up = right x forward. Ray = forward + right*sx + up*sy.
     vec3 f = normalize(uFront);
-    vec3 u = uUp - f * dot(uUp, f);
+
+    // right = forward x world_up
+    vec3 u = cross(f, uUp);
     float uLen = length(u);
+
     if (uLen < 1e-4) {
-        // Substitute an up vector not parallel to forward.
-        vec3 upSub = abs(f.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-        u = upSub - f * dot(upSub, f);
+        // Degenerate: forward parallel to world_up. Substitute an axis not parallel.
+        // Try Z axis first, then Y axis (same order as CPU).
+        vec3 upSub = abs(f.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        u = cross(f, upSub);
         uLen = length(u);
     }
-    u = u / uLen;  // right = normalize(up - forward*dot(up,forward))
-    vec3 v = cross(u, f);  // up = right x forward (NOT forward x right!)
-    vec3 d = normalize(f + u * sx + v * sy);  // forward + right*sx + up*sy
+    u = u / uLen;  // normalized right
+
+    // up = right x forward
+    vec3 v = cross(u, f);
+
+    // Ray: forward + right*sx + up*sy (sx=horizontal, sy=vertical)
+    vec3 d = normalize(f + u * sx + v * sy);
     vec3 startDir = d;
 
     vec3 ray = uEye;
