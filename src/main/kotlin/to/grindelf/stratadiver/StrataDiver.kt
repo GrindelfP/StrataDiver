@@ -167,13 +167,13 @@ class StrataDiver {
         /**
          * How far the resolution may fall before it stops falling.
          *
-         * One, so it does not fall at all: the traced image is the window's own 1280x720,
-         * and the adaptive controller is left in place only so a machine that cannot afford
-         * it can still ask for less without editing this. The trade is stated plainly —
-         * 1280x720 costs about 40 ms of trace per frame, which is ~25 fps, and the picture
-         * is bought with those frames rather than with a blur.
+         * Two, so it may downscale to 640x360 when the trace cost exceeds the budget.
+         * The adaptive controller is left in place so a machine that cannot afford
+         * 1280x720 can still run. The trade is stated plainly —
+         * 1280x720 costs about 40 ms of trace per frame (~25 fps), 640x360 about 10 ms (~60 fps).
+         * The picture at native res is bought with those frames; downscaling is the safety net.
          */
-        private const val PATH_SCALE_LIMIT = 1
+        private const val PATH_SCALE_LIMIT = 2
 
         /**
          * How many frames of tracing stand between two decisions about the resolution.
