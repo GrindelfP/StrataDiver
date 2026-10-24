@@ -421,6 +421,10 @@ class GpuTracer(
         history = historyNext
         historyNext = tmp
 
+        // Clean up texture bindings to prevent leakage into present pass
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0)
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0)
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
         // Everything below is a check on the GPU rather than on this file. A trace pass
@@ -449,6 +453,13 @@ class GpuTracer(
         // screen with a small correct patch in it, and reads as "the tracer is broken"
         // rather than "the viewport was left behind".
         glViewport(0, 0, screenWidth, screenHeight)
+
+        // Clean slate: unbind all texture units, then bind only history
+        for (i in 0..3) {
+            glActiveTexture(GL_TEXTURE0 + i)
+            glBindTexture(GL_TEXTURE_2D, 0)
+            glBindTexture(GL_TEXTURE_3D, 0)
+        }
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, history)
         presentProgram.setInt("uImage", 0)
