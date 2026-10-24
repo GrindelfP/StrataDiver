@@ -447,6 +447,7 @@ void main() {
 
     // Build camera basis with degenerate-case handling (same as CPU PathTracer.Basis).
     // When looking straight up/down, forward and up are parallel -> right vector is zero.
+    // CPU Basis: right = forward x up, up = right x forward. Ray: f + right*sx + up*sy.
     vec3 f = normalize(uFront);
     vec3 u = uUp - f * dot(uUp, f);
     float uLen = length(u);
@@ -456,9 +457,9 @@ void main() {
         u = upSub - f * dot(upSub, f);
         uLen = length(u);
     }
-    u = u / uLen;
-    vec3 v = cross(f, u);
-    vec3 d = normalize(f + u * sy + v * sx);
+    u = u / uLen;  // right = normalize(up - forward*dot(up,forward))
+    vec3 v = cross(u, f);  // up = right x forward (NOT forward x right!)
+    vec3 d = normalize(f + u * sx + v * sy);  // forward + right*sx + up*sy
     vec3 startDir = d;
 
     vec3 ray = uEye;
