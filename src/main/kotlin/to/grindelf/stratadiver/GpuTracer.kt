@@ -79,6 +79,10 @@ class GpuTracer(
         "src/main/resources/shaders/fullscreen.vert",
         "src/main/resources/shaders/denoise.frag"
     )
+    private val emaProgram = ShaderProgram(
+        "src/main/resources/shaders/fullscreen.vert",
+        "src/main/resources/shaders/ema.frag"
+    )
 
     /** The fullscreen quad every pass draws. Position only; UVs come from the shader. */
     private val quad = Geometry.upload(TRACE_QUAD, Geometry.POS_UV)!!
@@ -107,6 +111,9 @@ class GpuTracer(
     /** The average after the denoise pass has had it. This is what goes to the screen. */
     private var denoised = 0
 
+    /** Temporal history buffer for EMA smoothing. Updated after denoise, read by present. */
+    private var history = 0
+
     private val atlasTexture = uploadAtlas(atlasPixels)
 
     private val DEBUG_READBACK = java.lang.Boolean.getBoolean("stratadiver.gpuDebug")
@@ -126,6 +133,12 @@ class GpuTracer(
      * radius is one pixel, so there is nothing to adapt to.
      */
     private val SHARPEN = Integer.getInteger("stratadiver.sharpen", 40) / 100f
+
+    /**
+     * EMA temporal accumulation alpha. Higher = more history, less responsive.
+     * Default 0.92 (~12-frame half-life). Tunable with `-Dstratadiver.temporalAlpha=N`.
+     */
+    private val TEMPORAL_ALPHA = System.getProperty("stratadiver.temporalAlpha", "0.92").toFloat()
 
     /**
      * Which colour attachments each pass writes to.
@@ -213,7 +226,7 @@ class GpuTracer(
     private fun allocate() {
         if (width <= 0 || height <= 0) return
 
-        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
 
         read = floatTexture()
@@ -222,6 +235,7 @@ class GpuTracer(
         gbufferA = floatTexture()
         gbufferB = floatTexture()
         denoised = floatTexture()
+        history = floatTexture()
 
         mrtDrawBuffers.clear()
         mrtDrawBuffers.put(intArrayOf(GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2))
@@ -244,6 +258,7 @@ class GpuTracer(
 
         clearAccumulator(read)
         clearAccumulator(write)
+        clearAccumulator(history)
     }
 
     private fun floatTexture(): Int {
@@ -277,6 +292,7 @@ class GpuTracer(
      */
     fun reset() {
         sampleCount = 0
+        clearAccumulator(history)
     }
 
     /** Traces one sample per pixel and folds it into the average. */
@@ -379,6 +395,21 @@ class GpuTracer(
             glDrawArrays(GL_TRIANGLES, 0, 6)
         }
 
+        // --- Pass 4: temporal EMA — history = lerp(history, denoised, alpha) ---
+        // This smooths the image over time, reducing grain while moving.
+        // On reset (camera/world change), history is cleared so no ghosting persists.
+        val source = if (DENOISE) denoised else read
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, history, 0)
+        glDrawBuffers(singleDrawBuffer)
+        emaProgram.use()
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, source)
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, history)
+        emaProgram.setInt("uCurrent", 0)
+        emaProgram.setInt("uHistory", 1)
+        emaProgram.setFloat("uAlpha", TEMPORAL_ALPHA)
+        glBindVertexArray(quad.vao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
         // Everything below is a check on the GPU rather than on this file. A trace pass
@@ -408,7 +439,7 @@ class GpuTracer(
         // rather than "the viewport was left behind".
         glViewport(0, 0, screenWidth, screenHeight)
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, if (DENOISE) denoised else read)
+        glBindTexture(GL_TEXTURE_2D, history)
         presentProgram.setInt("uImage", 0)
         presentProgram.setFloat("uExposure", PathTracer.EXPOSURE)
         presentProgram.setVec2("uTexel", 1f / screenWidth, 1f / screenHeight)
@@ -445,7 +476,7 @@ class GpuTracer(
 
     fun release() {
         quad.release()
-        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
         MemoryUtil.memFree(mrtDrawBuffers)
         MemoryUtil.memFree(singleDrawBuffer)
