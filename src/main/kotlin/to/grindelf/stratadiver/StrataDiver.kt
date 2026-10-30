@@ -372,6 +372,7 @@ class StrataDiver {
      */
     fun capture(frames: Int, path: String, warmupFrames: Int = 0) {
         require(frames > 1 && warmupFrames >= 0)
+        val turnDegreesPerFrame = java.lang.Double.getDouble("stratadiver.benchmarkTurnDegrees", 0.0)
         init()
         player.spawnAboveGround(5f, 5f)
         streamer.update(player.position)
@@ -383,7 +384,9 @@ class StrataDiver {
             val sunDir = Vector3f(0.5f, sin(time.toDouble()).toFloat(), cos(time.toDouble()).toFloat())
             daylight = max(0.05f, sunDir.y)
             glClearColor(0.5f * daylight, 0.8f * daylight, daylight + 0.1f, 1.0f)
-            readInput(); tick(); aimedAt = player.raycast(); drawFrame(sunDir)
+            readInput()
+            if (turnDegreesPerFrame != 0.0) player.look(turnDegreesPerFrame, 0.0, 1f)
+            tick(); aimedAt = player.raycast(); drawFrame(sunDir)
             glfwSwapBuffers(window); glfwPollEvents(); frameTimes.end()
         }
         gpu.beginGpuTimingCapture()
@@ -401,6 +404,7 @@ class StrataDiver {
             daylight = max(0.05f, sunDir.y)
             glClearColor(0.5f * daylight, 0.8f * daylight, daylight + 0.1f, 1.0f)
             readInput()
+            if (turnDegreesPerFrame != 0.0) player.look(turnDegreesPerFrame, 0.0, 1f)
             tick()
             aimedAt = player.raycast()
             drawFrame(sunDir)
@@ -428,6 +432,7 @@ class StrataDiver {
             "OpenGL ${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VERSION)}")
         println("  window=${screenWidth.toInt()}x${screenHeight.toInt()} reported-framebuffer=${fw[0]}x${fh[0]} " +
             "render=${(screenWidth / pathScale).toInt()}x${(screenHeight / pathScale).toInt()} divisor=$pathScale")
+        println("  benchmark-camera-turn-degrees-per-frame=$turnDegreesPerFrame")
         println("  ${benchmark.report()} (CPU wall includes possible driver/presentation blocking)")
         println("  ${gpu.gpuTimingReport()} (asynchronous GL elapsed queries; unavailable results are omitted)")
         println("settled at scale $pathScale (${screenWidth / pathScale}x${screenHeight / pathScale}), " +
