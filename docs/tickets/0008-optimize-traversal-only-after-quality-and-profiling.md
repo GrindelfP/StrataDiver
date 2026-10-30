@@ -1,7 +1,7 @@
 # 0008 — Optimize GPU traversal from measured bottlenecks
 
 **Type:** Performance
-**Status:** Proposed
+**Status: ready/done**
 **Depends on:** 0001–0007
 
 ## Problem

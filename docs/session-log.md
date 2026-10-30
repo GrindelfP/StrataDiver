@@ -234,3 +234,4 @@ OPEN, and this is the honest state. Temporal accumulation (the plan's step 7, th
 
 NOT VERIFIED BY THE USER. Every claim above is a number or a capture; nobody has played it. The fog reduction is the change most in need of a judgement, because it is a look decision and the difference between 0.0055 and 0.0 is the whole "misty morning" the previous session was trying to escape.
 2026-10-30, 14:50, [UPDATE] Playtest confirmed the active GPU tracer still drops to adaptive half-resolution and misses the 60 fps target in native-scale runs; timing output is unreliable because FrameTimes inflates its average, so record findings and hypotheses separately before tuning the renderer.
+2026-10-30, 15:20, [UPDATE] Standardized the ticket headers with the requested ready/done status marker; retained each ticket's implementation and verification caveats so the marker does not imply unresolved GPU or performance acceptance is complete.

@@ -1,7 +1,7 @@
 # 0006 — Make denoising edge-aware and honest about missing detail
 
 **Type:** Image quality
-**Status:** Proposed
+**Status: ready/done**
 **Depends on:** 0003, 0004
 
 ## Problem
