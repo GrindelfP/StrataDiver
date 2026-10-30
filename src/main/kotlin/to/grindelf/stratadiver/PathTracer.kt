@@ -414,7 +414,8 @@ class PathTracer(
             val py = oy + dy * t + ny * SURFACE_EPS
             val pz = oz + dz * t + nz * SURFACE_EPS
 
-            // Albedo: the art pixel this ray actually landed on, taken into linear light.
+            // Atlas RGB bytes are authored sRGB; decode them before any lighting calculation.
+            // Accumulation stays linear until the film encodes once at presentation.
             sampleArt(ctx.art, hit.tile, hit.u, hit.v)
             val aR = srgbToLinear(ctx.art[0])
             val aG = srgbToLinear(ctx.art[1])
@@ -914,7 +915,9 @@ class PathTracer(
         val lut = film ?: FloatArray(FILM_STEPS + 1).also { table ->
             for (i in 0..FILM_STEPS) {
                 val v = i.toFloat() / FILM_STEPS * FILM_RANGE
-                table[i] = (1f - exp(-v * EXPOSURE)).pow(1f / 2.2f)
+                val linear = 1f - exp(-v * EXPOSURE)
+                table[i] = if (linear <= 0.0031308f) 12.92f * linear
+                else 1.055f * linear.pow(1f / 2.4f) - 0.055f
             }
             film = table
         }

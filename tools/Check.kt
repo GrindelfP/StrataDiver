@@ -3,6 +3,7 @@ package check
 import org.joml.Vector2f
 import org.joml.Vector3f
 import to.grindelf.stratadiver.*
+import kotlin.math.pow
 
 /**
  * Headless checks over everything that does not need a GL context.
@@ -28,6 +29,32 @@ fun check(name: String, condition: Boolean, detail: () -> String) {
 }
 
 fun main() {
+    println("\n== Path tracing estimator and color transfer ==")
+    run {
+        // The production roulette uses p=max(linear albedo), clamps p to [0.05, 0.95],
+        // then divides surviving throughput by p. A fixed-seed Bernoulli experiment
+        // checks the expected continuation factor against the no-roulette value.
+        val albedo = 0.2
+        val survival = albedo.coerceIn(0.05, 0.95)
+        val rng = java.util.Random(4004L)
+        var estimate = 0.0
+        val samples = 500_000
+        repeat(samples) {
+            if (rng.nextDouble() < survival) estimate += albedo / survival
+        }
+        estimate /= samples
+        check("roulette continuation converges to un-terminated throughput",
+            kotlin.math.abs(estimate - albedo) < 0.002, "estimate=$estimate expected=$albedo")
+
+        fun decodeSrgb(c: Double) = if (c <= 0.04045) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)
+        fun encodeSrgb(c: Double) = if (c <= 0.0031308) 12.92 * c else 1.055 * c.pow(1.0 / 2.4) - 0.055
+        val midpoint = decodeSrgb(0.5)
+        check("sRGB midpoint decodes to linear light", kotlin.math.abs(midpoint - 0.21404114) < 1e-7,
+            "linear=$midpoint")
+        check("sRGB encode/decode round-trips authored color",
+            kotlin.math.abs(encodeSrgb(midpoint) - 0.5) < 1e-12)
+    }
+
     println("\n== Frame-time rolling window ==")
     run {
         val average = RollingAverage(3)

@@ -49,7 +49,10 @@ void main() {
     v = max(v + uSharpen * (v - mean), vec3(0.0));
 
     vec3 tone = vec3(1.0) - exp(-v * uExposure);
-    tone = pow(tone, vec3(1.0 / 2.2));
+    bvec3 low = lessThanEqual(tone, vec3(0.0031308));
+    vec3 encodedLow = tone * 12.92;
+    vec3 encodedHigh = 1.055 * pow(tone, vec3(1.0 / 2.4)) - 0.055;
+    tone = mix(encodedHigh, encodedLow, low);
 
     FragColor = vec4(tone, 1.0);
 }

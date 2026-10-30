@@ -179,6 +179,10 @@ vec2 artTexel(int type, int face, vec2 uv) {
 /**
  * The colour of one point on one Tile, in linear light.
  *
+ * Atlas RGB bytes are authored sRGB; alpha is coverage and remains linear. Decode RGB here
+ * before it enters any lighting calculation. The trace targets and all filtering thereafter
+ * are linear radiance; present.frag applies the display encoding once.
+ *
  * A point sample and never a filtered one: a ray lands somewhere on the 16x16 art and every
  * ray lands somewhere different, which averages to the Tile's own mean colour at a distance.
  * A mipmapped lookup would be cheaper and wrong in exactly the way this renderer is trying
