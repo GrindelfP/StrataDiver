@@ -23,6 +23,7 @@ import org.lwjgl.opengl.GL11.GL_TEXTURE_MIN_FILTER
 import org.lwjgl.opengl.GL11.GL_TEXTURE_WRAP_S
 import org.lwjgl.opengl.GL11.GL_TEXTURE_WRAP_T
 import org.lwjgl.opengl.GL11.GL_TRIANGLES
+import org.lwjgl.opengl.GL11.GL_VIEWPORT
 import org.lwjgl.opengl.GL11.GL_PACK_ALIGNMENT
 import org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE
 import org.lwjgl.opengl.GL11.glBindTexture
@@ -33,6 +34,7 @@ import org.lwjgl.opengl.GL11.glDrawArrays
 import org.lwjgl.opengl.GL11.glEnable
 import org.lwjgl.opengl.GL11.glFinish
 import org.lwjgl.opengl.GL11.glGenTextures
+import org.lwjgl.opengl.GL11.glGetIntegerv
 import org.lwjgl.opengl.GL11.glLineWidth
 import org.lwjgl.opengl.GL11.glPixelStorei
 import org.lwjgl.opengl.GL11.glReadBuffer
@@ -226,7 +228,6 @@ class StrataDiver {
     private lateinit var sound: SoundEngine
     private val fps = FpsCounter()
     private val frameTimes = FrameTimes(STAGES)
-    private val resolutionPolicy = ResolutionPolicy(PATH_BUDGET_MS, maximumDivisor = PATH_SCALE_LIMIT)
     private lateinit var layout: SlotLayout
 
     /**
@@ -292,14 +293,15 @@ class StrataDiver {
     private lateinit var gpu: GpuTracer
 
     /** The tracer's resolution divisor. See [DEFAULT_PATH_SCALE]. */
-    private var pathScale = Integer.getInteger("stratadiver.scale", DEFAULT_PATH_SCALE)
+    private var pathScale = Integer.getInteger("stratadiver.scale", DEFAULT_PATH_SCALE).coerceIn(1, PATH_SCALE_LIMIT)
 
     /**
      * The highest scale the adaptive controller may reach. Defaults to
      * [PATH_SCALE_LIMIT], but can be pinned lower for a capture or a machine whose
      * framerate matters more than its sharpness, without disabling adaptation entirely.
      */
-    private val pathScaleMax = Integer.getInteger("stratadiver.scaleMax", PATH_SCALE_LIMIT)
+    private val pathScaleMax = Integer.getInteger("stratadiver.scaleMax", PATH_SCALE_LIMIT).coerceAtLeast(1)
+    private val resolutionPolicy = ResolutionPolicy(PATH_BUDGET_MS, maximumDivisor = pathScaleMax)
 
     /**
      * What the last frame of tracing cost, and the running average of that.
@@ -433,13 +435,17 @@ class StrataDiver {
         println("wrote $path")
         val fw = IntArray(1); val fh = IntArray(1)
         glfwGetFramebufferSize(window, fw, fh)
+        val ww = IntArray(1); val wh = IntArray(1)
+        glfwGetWindowSize(window, ww, wh)
+        val viewport = IntArray(4)
+        glGetIntegerv(GL_VIEWPORT, viewport)
         println("benchmark revision=${System.getProperty("stratadiver.revision", "unspecified")}")
         println("  os=${System.getProperty("os.name")} ${System.getProperty("os.version")} " +
             "gpu=${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VENDOR)} / " +
             "${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_RENDERER)} " +
             "OpenGL ${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VERSION)}")
-        println("  window=${screenWidth.toInt()}x${screenHeight.toInt()} reported-framebuffer=${fw[0]}x${fh[0]} " +
-            "render=${(screenWidth / pathScale).toInt()}x${(screenHeight / pathScale).toInt()} divisor=$pathScale")
+        println("  window=${ww[0]}x${wh[0]} glfw-framebuffer=${fw[0]}x${fh[0]} " +
+            "gl-viewport=${viewport[2]}x${viewport[3]} render=${(viewport[2] / pathScale)}x${(viewport[3] / pathScale)} divisor=$pathScale")
         println("  benchmark-camera-turn-degrees-per-frame=$turnDegreesPerFrame")
         println("  ${benchmark.report()} (CPU wall includes possible driver/presentation blocking)")
         println("  ${swapBenchmark.report().replace("cpu-frame-wall", "swap-call-wall")} " +
@@ -540,10 +546,13 @@ class StrataDiver {
         screenWidth = fw[0].toFloat()
         screenHeight = fh[0].toFloat()
         glViewport(0, 0, fw[0], fh[0])
+        val framebufferWidth = IntArray(1)
+        val framebufferHeight = IntArray(1)
+        glfwGetFramebufferSize(window, framebufferWidth, framebufferHeight)
         val viewport = IntArray(4)
         glGetIntegerv(GL_VIEWPORT, viewport)
-        println("gl surface ${viewport[2]}x${viewport[3]} viewport (window=${fw[0]}x${fh[0]}, " +
-            "GLFW framebuffer queried separately in diagnostics)")
+        println("gl surface viewport ${viewport[2]}x${viewport[3]} (window=${fw[0]}x${fh[0]}, " +
+            "GLFW framebuffer=${framebufferWidth[0]}x${framebufferHeight[0]})")
 
         layout = SlotLayout(screenWidth, screenHeight)
 

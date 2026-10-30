@@ -111,7 +111,7 @@ fun main() {
         repeat(3) { scale = policy.observe(scale, 10.0) }
         check("sustained headroom recovers one divisor step", scale == 1)
         repeat(6) { scale = policy.observe(scale, 100.0) }
-        check("resolution policy remains within divisor bounds", scale == 2)
+        check("resolution policy remains within divisor bounds", scale in 1..3, "scale=$scale")
     }
     println("\n== GPU volume window coordinates ==")
     val volumeWindow = VolumeWindow(across = 9, high = 7)

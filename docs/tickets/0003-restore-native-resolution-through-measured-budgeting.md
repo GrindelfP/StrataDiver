@@ -31,7 +31,7 @@ Headless tests can validate rolling-average and controller arithmetic. **Real GL
 
 ## Current implementation status (2026-10-30)
 
-- The CPU frame/stage averages now use an exact 60-sample rolling window. This fixes accounting but does not measure completed GPU work.
-- The live diagnostic overlay reports active render width × height and the current divisor. The baseline capture also reports window, GLFW framebuffer, GL surface and render dimensions.
-- **Not accepted:** no asynchronous GPU timer-query measurements or real-window performance run are available for this ticket. Existing scale adaptation remains based on the CPU trace stage, not demonstrated end-to-end/GPU cost; this work does not claim to have validated or tuned it.
-- “FHQ” (including whether it means Full HD), logical-window versus framebuffer target, and the quality/performance target remain user decisions. Do not change defaults or declare a resolution policy until those are confirmed. No 60 FPS claim is made.
+- User confirmed the output goal is **1280×720** (FHQ means 1920×1080, but that is not the current target). The default policy starts at divisor 1; downscaling is limited to divisor 2.
+- CPU frame/stage averages use an exact 60-sample rolling window. Scale decisions now use smoothed sums of the measured CPU stages, with a 16.7 ms budget, six-frame decision windows, hysteresis, and at most one divisor step per decision. Swap/vsync blocking is excluded deliberately. The policy is headlessly checked.
+- GL timer queries remain opt-in and measure selected GPU passes asynchronously; they do not constitute a complete GPU frame total and are not used to claim the target budget is met.
+- **Not accepted / remaining:** no real-window run has verified that the displayed surface and active render target are both 1280×720, or measured sustained performance during camera motion. CPU-stage timings omit completed asynchronous GPU work. Run and record the real-window validation; if GPU timing is needed for the controller, add reliable non-blocking aggregate GPU coverage before treating the budget as end-to-end. No 60 FPS claim is made.
