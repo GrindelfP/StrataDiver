@@ -537,6 +537,7 @@ class StrataDiver {
         )
         atlasTexture = uploadAtlas()
         volume = WorldVolume(streamer)
+        streamer.onBlockChanged = { volume.markWorldChanged() }
         gpu = GpuTracer(volume, Art.buildAtlasPixels())
         minimap = Minimap(streamer)
         minimapTexture = uploadMinimapTexture()

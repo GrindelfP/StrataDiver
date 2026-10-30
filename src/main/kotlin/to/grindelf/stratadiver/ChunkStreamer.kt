@@ -67,6 +67,9 @@ class ChunkStreamer(
     private val maxChunksPerFrame: Int = 12
 ) : SolidWorld, LitWorld, GridWorld {
 
+    /** Invoked after block data and derived light are current, for GPU-side consumers. */
+    var onBlockChanged: (() -> Unit)? = null
+
     private val chunks = mutableMapOf<Triple<Int, Int, Int>, Chunk>()
 
     /**
@@ -200,6 +203,7 @@ val light = LightEngine(this)
         chunk.setBlock(lx, ly, lz, type)
         version++
         light.onBlockChanged(x, y, z, wasPacked)
+        onBlockChanged?.invoke()
         return true
     }
 
