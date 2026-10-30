@@ -197,10 +197,10 @@ class PathTracer(
          *
          * A bounce that escapes finds some sky, and the direct lighting above it already
          * found some. Counting both at full weight counts the sky twice; counting both at
-         * half weight counts it once. It is exactly half because both strategies sample the
-         * same cosine-weighted distribution, so the power heuristic's weights are equal
-         * whatever the direction — a coincidence worth having, and one that would silently
-         * stop being true the day either distribution changed.
+         * half weight counts it once. This is an explicit equal split of two unbiased
+         * estimates, not a power-heuristic MIS weight: roulette changes the continuation
+         * strategy's sampling density. Survival compensation keeps that estimate unbiased
+         * before this split is applied.
          */
         private const val SKY_MIS_WEIGHT = 0.5f
     }

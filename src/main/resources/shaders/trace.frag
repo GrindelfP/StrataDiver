@@ -61,8 +61,9 @@ const float FOG_DENSITY = 0.002;
 const float FIREFLY_CLAMP = 10.0;
 const float SURFACE_EPS = 1e-3;
 const float INV_PI = 0.31830988618;
-// The direct cosine-hemisphere sample and the cosine-BSDF continuation have identical
-// PDFs. The power heuristic therefore assigns each strategy 1/2 for the same sky path.
+// The direct sky estimate and BSDF continuation are separate unbiased estimates; each is
+// assigned half so their sum stays unbiased. This is an explicit equal split, not a power
+// heuristic: roulette changes the continuation sampling density, and is compensated below.
 const float SKY_MIS_WEIGHT = 0.5;
 const float EMISSION_SCALE = EMISSION_RADIANCE / 15.0;
 const float TAU = 6.28318530718;
