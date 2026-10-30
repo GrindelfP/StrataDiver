@@ -802,7 +802,9 @@ class StrataDiver {
         Hud.minimap(ui, minimapTexture, minimap, player, MINIMAP_DIAMETER, MINIMAP_MARGIN)
         Hud.crosshair(ui)
         fps.render(ui)
-        frameTimes.render(ui, 10f, 56f, 220f)
+        val renderWidth = (screenWidth / pathScale).toInt().coerceAtLeast(16)
+        val renderHeight = (screenHeight / pathScale).toInt().coerceAtLeast(16)
+        frameTimes.render(ui, 10f, 56f, 220f, "R ${renderWidth}X${renderHeight} D $pathScale")
         Hud.hotbar(ui, layout, inventory, selectedSlot)
         if (inventoryOpen) {
             Hud.inventory(ui, layout, inventory)

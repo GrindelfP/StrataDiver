@@ -83,7 +83,7 @@ class FrameTimes(private val stageNames: List<String>) {
      * the question this answers is "what is eating the frame", and that is a shape
      * question: one fat bar segment names its culprit faster than any table can.
      */
-    fun render(ui: UiPass, x: Float, y: Float, width: Float) {
+    fun render(ui: UiPass, x: Float, y: Float, width: Float, diagnostics: String) {
         ui.begin()
 
         val scale = 4f
@@ -111,6 +111,8 @@ class FrameTimes(private val stageNames: List<String>) {
                 tx = x
             }
         }
+
+        text(ui, x, y + 20f, diagnostics, 0.8f)
 
         ui.end()
     }

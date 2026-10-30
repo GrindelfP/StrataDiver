@@ -1,7 +1,7 @@
 # 0003 — Restore native output resolution with an honest frame budget
 
 **Type:** Renderer / performance
-**Status:** Proposed
+**Status:** Partial — instrumentation improved; policy and performance acceptance remain open
 **Depends on:** 0001, 0002
 
 ## Problem
@@ -28,3 +28,10 @@ At the default divisor 2, the observed render was 640×360 on a 1280×720 surfac
 ## Verification and remaining checks
 
 Headless tests can validate rolling-average and controller arithmetic. **Real GL playtesting is required** for GPU timing, visible sharpness, judder, and sustained 60 FPS. If the target cannot be met, record measured results and propose a tradeoff rather than promising it.
+
+## Current implementation status (2026-10-30)
+
+- The CPU frame/stage averages now use an exact 60-sample rolling window. This fixes accounting but does not measure completed GPU work.
+- The live diagnostic overlay reports active render width × height and the current divisor. The baseline capture also reports window, GLFW framebuffer, GL surface and render dimensions.
+- **Not accepted:** no asynchronous GPU timer-query measurements or real-window performance run are available for this ticket. Existing scale adaptation remains based on the CPU trace stage, not demonstrated end-to-end/GPU cost; this work does not claim to have validated or tuned it.
+- “FHQ” (including whether it means Full HD), logical-window versus framebuffer target, and the quality/performance target remain user decisions. Do not change defaults or declare a resolution policy until those are confirmed. No 60 FPS claim is made.
