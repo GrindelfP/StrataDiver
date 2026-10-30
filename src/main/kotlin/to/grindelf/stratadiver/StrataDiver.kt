@@ -371,7 +371,7 @@ class StrataDiver {
      * elegance of asserting on numbers instead.
      */
     fun capture(frames: Int, path: String, warmupFrames: Int = 0) {
-        require(frames > 0 && warmupFrames >= 0)
+        require(frames > 1 && warmupFrames >= 0)
         init()
         player.spawnAboveGround(5f, 5f)
         streamer.update(player.position)
@@ -411,7 +411,9 @@ class StrataDiver {
             glfwSwapBuffers(window)
             glfwPollEvents()
             frameTimes.end()
-            benchmark.record(frameTimes.frameMillis)
+            // The last frame performs a synchronous PNG readback, so it is intentionally
+            // excluded from timing rather than contaminating the distribution.
+            if (i < frames - 1) benchmark.record(frameTimes.frameMillis)
             if (i % 10 == 0) println("  frame $i of $frames")
         }
 
@@ -419,6 +421,10 @@ class StrataDiver {
         val fw = IntArray(1); val fh = IntArray(1)
         glfwGetFramebufferSize(window, fw, fh)
         println("benchmark revision=${System.getProperty("stratadiver.revision", "unspecified")}")
+        println("  os=${System.getProperty("os.name")} ${System.getProperty("os.version")} " +
+            "gpu=${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VENDOR)} / " +
+            "${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_RENDERER)} " +
+            "OpenGL ${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VERSION)}")
         println("  window=${screenWidth.toInt()}x${screenHeight.toInt()} reported-framebuffer=${fw[0]}x${fh[0]} " +
             "render=${(screenWidth / pathScale).toInt()}x${(screenHeight / pathScale).toInt()} divisor=$pathScale")
         println("  ${benchmark.report()} (CPU wall includes any driver/presentation blocking; GPU time unavailable)")

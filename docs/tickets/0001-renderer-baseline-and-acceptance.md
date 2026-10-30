@@ -1,7 +1,7 @@
 # 0001 — Establish a repeatable renderer baseline and acceptance gate
 
 **Type:** Measurement / prerequisite
-**Status:** Proposed
+**Status:** Instrumentation implemented; measurement and acceptance remain open
 **Depends on:** none
 
 ## Problem
@@ -28,3 +28,11 @@ The target phrase “FHQ” is ambiguous. This plan provisionally treats it as *
 ## Verification and remaining checks
 
 Compile and run any headless checks affected by instrumentation. **Real GL-window playtesting is required** to collect GPU timings and inspect the rendered scene. Until that playtest is performed, GPU cost, sustained target performance, and visual acceptability remain unverified.
+
+## Repeatable baseline procedure (implemented)
+
+Run `tools/renderer-baseline.sh` from the repository root on the target machine. It compiles, performs 120 warm-up frames and records up to 599 timed frames by default (the 600th frame is reserved for capture); `WARMUP_FRAMES`, `FRAMES`, and `CAPTURE` override these values. `FRAMES` must be greater than one. It starts from the same spawn and does not inject camera motion, so this is a stationary run. The run writes a final PNG and reports revision, OS, GL vendor/renderer/version, requested window size, GLFW-reported framebuffer size, actual GL surface size, trace dimensions/divisor, and CPU-wall median/p95. Repeat with the same revision, settings, display configuration, and scene. For movement/turning, cave/occlusion, and sunlit/shadow-edge cases, use a separate manually recorded playtest; these are not represented by the stationary capture.
+
+The current capture mode reads back a PNG on its final frame and that readback synchronizes the GPU; that frame is deliberately excluded from the timing distribution. Per-frame CPU wall timing includes any driver or swap/presentation blocking and therefore is not a pure CPU-work or presentation-wait breakdown. GPU execution time is explicitly unavailable: this step does not add timer queries. Do not interpret the displayed FPS/HUD or CPU wall report as a GPU timing or release gate. Screenshots are saved at the actual GL surface dimensions, not enlarged to a presumed native output.
+
+**Still unresolved by design:** “FHQ” may mean 1920×1080, but this is not confirmed. The meaning of resolution (logical window versus framebuffer pixels) also needs user confirmation. No 60 FPS target, 1080p60 promise, or release gate is established by ticket 0001. A GL-window run is required to validate the procedure, collect real measurements, and decide whether asynchronous OpenGL timer queries can be used reliably on the target driver.
