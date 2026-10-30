@@ -128,13 +128,16 @@ class GpuTracer(
      */
     private val DENOISE = !java.lang.Boolean.getBoolean("stratadiver.noDenoise")
 
+    /** Display the raw progressive average, bypassing both denoise and temporal EMA. */
+    private val RAW_TRACE = java.lang.Boolean.getBoolean("stratadiver.rawTrace")
+
     /**
      * How much edge to put back, as a fraction of the difference between a pixel and its
      * neighbourhood mean. Tunable with `-Dstratadiver.sharpen=N`; 0 turns it off. A fixed
      * amount rather than an adaptive one, because the image is 1:1 with the window and the
      * radius is one pixel, so there is nothing to adapt to.
      */
-    private val SHARPEN = Integer.getInteger("stratadiver.sharpen", 40) / 100f
+    private val SHARPEN = Integer.getInteger("stratadiver.sharpen", 0) / 100f
 
     /**
      * EMA temporal accumulation alpha. Higher = more history, less responsive.
@@ -461,11 +464,11 @@ class GpuTracer(
             glBindTexture(GL_TEXTURE_3D, 0)
         }
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, history)
+        glBindTexture(GL_TEXTURE_2D, if (RAW_TRACE) read else history)
         presentProgram.setInt("uImage", 0)
         presentProgram.setFloat("uExposure", PathTracer.EXPOSURE)
         presentProgram.setVec2("uTexel", 1f / screenWidth, 1f / screenHeight)
-        presentProgram.setFloat("uSharpen", SHARPEN)
+        presentProgram.setFloat("uSharpen", if (RAW_TRACE) 0f else SHARPEN)
         glBindVertexArray(quad.vao)
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glEnable(GL_DEPTH_TEST)

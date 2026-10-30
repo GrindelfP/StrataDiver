@@ -1,7 +1,7 @@
 # 0006 — Make denoising edge-aware and honest about missing detail
 
 **Type:** Image quality
-**Status: ready/done**
+**Status: implemented; live visual verification remains**
 **Depends on:** 0003, 0004
 
 ## Problem
@@ -25,3 +25,10 @@
 ## Verification and remaining checks
 
 Image fixtures can test filter math offline if extracted into a testable path. **A real GL playtest** must compare motion, edges, texture detail, and perceived sharpness; filter quality and temporal artifacts remain unverified until then.
+
+## Implementation notes
+
+- `BilateralDenoiser` is the deterministic CPU reference for the shader's 3×3 weights. `tools/Check.kt` covers flat-region variance reduction and bounded leakage at depth, normal, albedo, and sky boundaries.
+- The GPU filter uses the same tighter depth/albedo thresholds. Radiance and both guide textures are allocated together at trace dimensions, overwritten together per sample, and sampled with trace-sized `uTexel`; resize replaces them together and reset clears temporal history.
+- `-Dstratadiver.rawTrace=true` shows the progressive average before denoising/EMA/sharpening. Sharpening is opt-in (`-Dstratadiver.sharpen=N`, default 0); it is not detail reconstruction. The existing scale report gives trace dimensions alongside display dimensions.
+- Offline verification cannot establish motion stability or perceptual quality at native/reduced scale. Those require a live GL playtest.

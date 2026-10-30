@@ -32,10 +32,13 @@ out vec4 FragColor;
 
 const int RADIUS = 1;
 const float NORMAL_POWER = 16.0;
-const float DEPTH_SIGMA = 0.5;    // Cells: a voxel edge is one Cell deep.
-const float ALBEDO_SIGMA = 0.12;  // Linear albedo.
+const float DEPTH_SIGMA = 0.25;   // Cells: one-cell-separated layers contribute at most e^-8.
+const float ALBEDO_SIGMA = 0.08;  // Linear albedo; preserve authored tile contrast.
 
 void main() {
+    // uImage and both guides are allocated at the same trace dimensions. uTexel is supplied
+    // from those dimensions (not the display framebuffer), so every offset addresses the
+    // matching current-sample guide when adaptive scale changes.
     vec4 centreA = texture(uGbufferA, TexCoord);
     vec3 centreN = centreA.xyz;
     float centreD = centreA.w;
