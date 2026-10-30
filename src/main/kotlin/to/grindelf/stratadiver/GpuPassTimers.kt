@@ -18,8 +18,17 @@ class GpuPassTimers(private val enabled: Boolean = java.lang.Boolean.getBoolean(
     private val written = IntArray(passes.size)
     private val pending = Array(passes.size) { BooleanArray(ringSize) }
     private val active = IntArray(passes.size) { -1 }
-    private val nanos = Array(passes.size) { LongArray(ringSize) }
+    // Keep the full captured distribution; the query ring is only for non-blocking
+    // transport and must not silently reduce a 600-frame benchmark to its last 8 frames.
+    private val nanos = Array(passes.size) { LongArray(4096) }
     private val counts = IntArray(passes.size)
+    private val captureSample = Array(passes.size) { BooleanArray(ringSize) }
+    private var capturing = false
+
+    /** Exclude setup/warm-up work from a benchmark's GPU distribution. */
+    fun beginCapture() {
+        capturing = true
+    }
 
     fun begin(pass: Int) {
         if (!enabled) return
@@ -31,6 +40,7 @@ class GpuPassTimers(private val enabled: Boolean = java.lang.Boolean.getBoolean(
             collect(pass, slot)
         }
         active[pass] = slot
+        captureSample[pass][slot] = capturing
         glBeginQuery(GL_TIME_ELAPSED, queries[pass][slot])
     }
 
@@ -52,18 +62,23 @@ class GpuPassTimers(private val enabled: Boolean = java.lang.Boolean.getBoolean(
     }
 
     private fun collect(pass: Int, slot: Int) {
-        nanos[pass][slot] = glGetQueryObjectui64(queries[pass][slot], GL_QUERY_RESULT)
+        val result = glGetQueryObjectui64(queries[pass][slot], GL_QUERY_RESULT)
+        if (captureSample[pass][slot] && counts[pass] < nanos[pass].size)
+            nanos[pass][counts[pass]++] = result
         pending[pass][slot] = false
-        counts[pass]++
     }
 
     fun report(): String {
         if (!enabled) return "GPU timers disabled (launch with -Dstratadiver.gpuTimers=true)"
         poll()
         return passes.indices.joinToString("  ") { p ->
-            val values = nanos[p].filter { it > 0 }.sorted()
-            if (values.isEmpty()) "${passes[p]}=unavailable" else
-                "${passes[p]}-gpu-ms median=${"%.3f".format(values[values.size / 2] / 1e6)} n=${values.size}"
+            val values = nanos[p].take(counts[p]).sorted()
+            if (values.isEmpty()) "${passes[p]}=unavailable" else {
+                val median = values[kotlin.math.ceil(values.size * 0.50).toInt() - 1]
+                val p95 = values[kotlin.math.ceil(values.size * 0.95).toInt() - 1]
+                "${passes[p]}-gpu-ms median=${"%.3f".format(median / 1e6)} " +
+                    "p95=${"%.3f".format(p95 / 1e6)} n=${values.size}"
+            }
         }
     }
 

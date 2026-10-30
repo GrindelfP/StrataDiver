@@ -485,6 +485,8 @@ class GpuTracer(
 
     fun gpuTimingReport(): String = passTimers.report()
 
+    fun beginGpuTimingCapture() = passTimers.beginCapture()
+
     /**
      * The average, as bytes, for anything that needs to look at it off-screen.
      *

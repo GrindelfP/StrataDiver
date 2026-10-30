@@ -386,6 +386,7 @@ class StrataDiver {
             readInput(); tick(); aimedAt = player.raycast(); drawFrame(sunDir)
             glfwSwapBuffers(window); glfwPollEvents(); frameTimes.end()
         }
+        gpu.beginGpuTimingCapture()
 
         for (i in 0 until frames) {
             // The frame timer is driven here too. It is easy to forget — the capture path
