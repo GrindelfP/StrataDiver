@@ -28,6 +28,17 @@ fun check(name: String, condition: Boolean, detail: () -> String) {
 }
 
 fun main() {
+    println("\n== Frame-time rolling window ==")
+    run {
+        val average = RollingAverage(3)
+        check("empty rolling mean is zero", average.count == 0 && average.average() == 0.0)
+        listOf(10.0, 20.0, 30.0).forEach(average::add)
+        check("mean covers all three retained samples", average.count == 3 && average.average() == 20.0)
+        average.add(40.0)
+        check("full window evicts exactly its oldest sample", average.count == 3 && average.average() == 30.0)
+        average.add(50.0)
+        check("wraparound still averages retained samples", average.average() == 40.0)
+    }
     println("\n== GPU volume window coordinates ==")
     val volumeWindow = VolumeWindow(across = 9, high = 7)
     val (initial, firstMove) = volumeWindow.update(-0.1f, 64f, 16f)

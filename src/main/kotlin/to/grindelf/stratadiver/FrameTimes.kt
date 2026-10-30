@@ -23,12 +23,10 @@ package to.grindelf.stratadiver
  */
 class FrameTimes(private val stageNames: List<String>) {
 
-    private val since = LongArray(stageNames.size)
-    private val total = DoubleArray(stageNames.size)
+    private val stageAverages = Array(stageNames.size) { RollingAverage(60) }
+    private val frameAverage = RollingAverage(60)
+    private val stageFrame = DoubleArray(stageNames.size)
     private var mark = System.nanoTime()
-
-    /** Frames folded into the current averages. */
-    private var samples = 0
 
     private var frameTotal = 0.0
 
@@ -39,6 +37,7 @@ class FrameTimes(private val stageNames: List<String>) {
     fun begin() {
         mark = System.nanoTime()
         frameTotal = 0.0
+        stageFrame.fill(0.0)
     }
 
     /** Closes the stage before [index] and opens the next one. */
@@ -51,8 +50,7 @@ class FrameTimes(private val stageNames: List<String>) {
         // decide how hard it can afford to work, sat pinned at minimum resolution forever
         // without ever printing anything wrong.
         val ms = delta / 1e6
-        since[index] = delta
-        total[index] += ms
+        stageFrame[index] += ms
         frameTotal += ms
         mark = now
     }
@@ -67,19 +65,15 @@ class FrameTimes(private val stageNames: List<String>) {
     fun end() {
         val now = System.nanoTime()
         val last = now - mark
-        total[total.size - 1] += last / 1e6
-        frameTotal += last / 1e6
-
-        samples++
-        if (samples > 60) {
-            for (i in total.indices) total[i] *= 0.95
-            frameTotal *= 0.95
-            samples = 1
-        }
-        frameMillis = frameTotal
+        val ms = last / 1e6
+        stageFrame[stageFrame.lastIndex] += ms
+        frameTotal += ms
+        stageFrame.forEachIndexed { index, value -> stageAverages[index].add(value) }
+        frameAverage.add(frameTotal)
+        frameMillis = frameAverage.average()
     }
 
-    fun average(index: Int): Double = total[index] / samples.coerceAtLeast(1)
+    fun average(index: Int): Double = stageAverages[index].average()
 
     /**
      * Draws the breakdown under the frame-rate readout.
