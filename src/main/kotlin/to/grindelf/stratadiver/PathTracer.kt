@@ -84,8 +84,7 @@ class PathTracer(
          *
          * A Cell the world has not produced reads as air, so without a bound a ray toward
          * the horizon would march through the entire unwritten world one Cell at a time,
-         * finding nothing, forever. The bound is also where the aerial perspective takes
-         * over, so the edge of the streamed world is read as haze rather than as a cliff.
+         * finding nothing, forever. Reaching this bound is equivalent to seeing open sky.
          */
         const val MAX_DISTANCE = 128f
 
@@ -127,9 +126,6 @@ class PathTracer(
 
         /** How bright a fully-emitting Block Type is, measured on its own faces. */
         const val EMISSION_RADIANCE = 6f
-
-        /** How quickly the air hides distance. See where it is applied in [PathTracer.trace]. */
-        const val FOG_DENSITY = 0.0055f
 
         /** The film. Radiance is not a colour until something decides it is. */
         const val EXPOSURE = 1.15f
@@ -357,17 +353,6 @@ class PathTracer(
         var r = 0f; var g = 0f; var b = 0f
         var thR = 1f; var thG = 1f; var thB = 1f
 
-        /**
-         * How far the eye could see before something stopped it. Only this distance gets the
-         * aerial perspective blend, and that is a deliberate simplification, said here
-         * because it is one: fog between two surfaces deep in the world would put weather
-         * inside a sealed room.
-         */
-        var firstDistance = -1f
-        var firstCellX = 0
-        var firstCellY = 0
-        var firstCellZ = 0
-
         var depth = 0
         while (depth <= MAX_DEPTH) {
             val hit = ctx.surface
@@ -389,11 +374,6 @@ class PathTracer(
             }
 
             val t = if (itemHit) hit.t else worldT
-            if (depth == 0) {
-                firstDistance = t
-                firstCellX = hit.x; firstCellY = hit.y; firstCellZ = hit.z
-            }
-
             val nx = hit.nx
             val ny = hit.ny
             val nz = hit.nz
@@ -464,36 +444,6 @@ class PathTracer(
 
         val out = ctx.result
         out[0] = r; out[1] = g; out[2] = b
-
-        /**
-         * Aerial perspective, applied once, over the distance the eye can see.
-         *
-         * Two things about this were wrong before they were right, and both are worth
-         * writing down because both produced a plausible picture.
-         *
-         * The blend used to multiply the air's own contribution by the transmittance as well
-         * as mixing it in, which is the (1-T) term applied twice: the world's distance haze was
-         * quadratically weak, and — because the air's colour was a constant — it put a faint
-         * blue glow inside sealed rooms that had no business being lit at all.
-         *
-         * The second is why it is gated on the Daylight the hit Cell can see. The air
-         * scatters the sky's light, so there is no sky light to scatter where the sky does not
-         * reach. That is one byte out of the Chunk the ray has already resolved, and it is
-         * what makes a cave read as dark and a valley read as hazy rather than both reading
-         * as the same amount of nothing.
-         *
-         * The world really does stop being written down at the edge of the streamed band,
-         * and this is the difference between that reading as weather and reading as a bug.
-         */
-        if (firstDistance > 0f && ctx.daylightAt(firstCellX, firstCellY, firstCellZ) > 0) {
-            val transmittance = exp(-FOG_DENSITY * firstDistance)
-            if (transmittance < 1f) {
-                val haze = skyRadiance(ctx, emitters, startX, startY, startZ, withSun = false)
-                out[0] = out[0] * transmittance + haze[0] * (1f - transmittance)
-                out[1] = out[1] * transmittance + haze[1] * (1f - transmittance)
-                out[2] = out[2] * transmittance + haze[2] * (1f - transmittance)
-            }
-        }
 
         }
 

@@ -57,7 +57,6 @@ const float SUN_ANGLE = 0.035;
 const float SUN_IRRADIANCE = 3.2;
 const float MOON_IRRADIANCE = 0.035;
 const float EMISSION_RADIANCE = 6.0;
-const float FOG_DENSITY = 0.002;
 const float FIREFLY_CLAMP = 10.0;
 const float SURFACE_EPS = 1e-3;
 const float INV_PI = 0.31830988618;
@@ -232,8 +231,7 @@ vec3 faceNormal(int face) {
  * Without it a ray toward the sky steps all 128 Cells of `MAX_DISTANCE` through empty space
  * finding nothing, and there are three of those per surface and three surfaces per pixel.
  * Outside the volume there is nothing to hit by construction, so the walk can end there
- * without changing an answer — the Cells beyond it read as AIR anyway, which is why the
- * aerial perspective is what turns that edge into haze rather than a cliff.
+ * without changing an answer — the Cells beyond it read as AIR anyway, and the ray sees sky.
  */
 bool intersectWorld(vec3 o, vec3 d, float maxT) {
     vec3 lo = vec3(uOrigin);
@@ -531,17 +529,6 @@ void main() {
                 if (rand(seed) >= survival) break;
                 throughput /= survival;
             }
-        }
-    }
-
-    // Aerial perspective, applied once, over the distance the eye can see. Gated on whether
-    // the sky reaches the Cell that was hit, because the air scatters the sky's light and
-    // there is none to scatter where the sky does not reach.
-    if (firstDistance > 0.0 && daylightAt(firstCell) > 0) {
-        float transmittance = exp(-FOG_DENSITY * firstDistance);
-        if (transmittance < 1.0) {
-            vec3 haze = skyRadiance(startDir, false);
-            radiance = radiance * transmittance + haze * (1.0 - transmittance);
         }
     }
 
