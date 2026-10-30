@@ -379,6 +379,7 @@ class StrataDiver {
         streamer.update(player.position)
 
         val benchmark = FrameBenchmark(frames)
+        val swapBenchmark = FrameBenchmark(frames)
         repeat(warmupFrames) {
             frameTimes.begin()
             val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED
@@ -414,12 +415,17 @@ class StrataDiver {
             // undefined — the first capture came back with a stale composite of two frames,
             // which looked exactly like a renderer bug and was entirely the harness's.
             if (i == frames - 1) writePng(path)
+            val swapStarted = System.nanoTime()
             glfwSwapBuffers(window)
+            val swapMillis = (System.nanoTime() - swapStarted) / 1e6
             glfwPollEvents()
             frameTimes.end()
             // The last frame performs a synchronous PNG readback, so it is intentionally
             // excluded from timing rather than contaminating the distribution.
-            if (i < frames - 1) benchmark.record(frameTimes.frameMillis)
+            if (i < frames - 1) {
+                benchmark.record(frameTimes.frameMillis)
+                swapBenchmark.record(swapMillis)
+            }
             if (i % 10 == 0) println("  frame $i of $frames")
         }
 
@@ -435,6 +441,8 @@ class StrataDiver {
             "render=${(screenWidth / pathScale).toInt()}x${(screenHeight / pathScale).toInt()} divisor=$pathScale")
         println("  benchmark-camera-turn-degrees-per-frame=$turnDegreesPerFrame")
         println("  ${benchmark.report()} (CPU wall includes possible driver/presentation blocking)")
+        println("  ${swapBenchmark.report().replace("cpu-frame-wall", "swap-call-wall")} " +
+            "(includes any blocking inside glfwSwapBuffers; not pure display scanout time)")
         println("  ${gpu.gpuTimingReport()} (asynchronous GL elapsed queries; unavailable results are omitted)")
         println("settled at scale $pathScale (${screenWidth / pathScale}x${screenHeight / pathScale}), " +
             "${"%.1f".format(frameTimes.frameMillis)} ms a frame")
