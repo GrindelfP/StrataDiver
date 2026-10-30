@@ -28,6 +28,14 @@ fun check(name: String, condition: Boolean, detail: () -> String) {
 }
 
 fun main() {
+    println("\n== GPU volume window coordinates ==")
+    val volumeWindow = VolumeWindow(across = 9, high = 7)
+    val (initial, firstMove) = volumeWindow.update(-0.1f, 64f, 16f)
+    val (stationary, stationaryMove) = volumeWindow.update(-0.1f, 64f, 16f)
+    val (crossed, crossedMove) = volumeWindow.update(-16.1f, 64f, 16f)
+    check("initial anchor converts chunk coordinates to Cell origin", firstMove && initial.cellX == -80 && initial.cellY == 16 && initial.cellZ == -48)
+    check("stationary update preserves anchor without invalidation", !stationaryMove && stationary == initial)
+    check("negative boundary crossing moves exactly one Chunk", crossedMove && crossed.cellX == initial.cellX - Chunk.SIZE)
     run {
         val benchmark = FrameBenchmark(4)
         listOf(8.0, 4.0, 16.0, 12.0).forEach(benchmark::record)

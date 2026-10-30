@@ -20,6 +20,27 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.floor
 
+/** Pure chunk-anchor arithmetic shared by the GPU volume and headless checks. */
+class VolumeWindow(private val across: Int, private val high: Int) {
+    data class Origin(val chunkX: Int, val chunkY: Int, val chunkZ: Int) {
+        val cellX get() = chunkX * Chunk.SIZE
+        val cellY get() = chunkY * Chunk.SIZE
+        val cellZ get() = chunkZ * Chunk.SIZE
+    }
+
+    private var current: Origin? = null
+
+    fun update(cellX: Float, cellY: Float, cellZ: Float): Pair<Origin, Boolean> {
+        val cx = Math.floorDiv(floor(cellX).toInt(), Chunk.SIZE) - across / 2
+        val cy = Math.floorDiv(floor(cellY).toInt(), Chunk.SIZE) - high / 2
+        val cz = Math.floorDiv(floor(cellZ).toInt(), Chunk.SIZE) - across / 2
+        val next = Origin(cx, cy, cz)
+        val changed = next != current
+        current = next
+        return next to changed
+    }
+}
+
 /**
  * The world's Cells, on the GPU, as one 3D texture the shader can walk.
  *
@@ -79,6 +100,7 @@ class WorldVolume(
 
     /** The Chunk grid positions already uploaded at the current origin. */
     private val uploaded = HashSet<Long>()
+    private val window = VolumeWindow(across, high)
 
     private val id = glGenTextures()
 
@@ -86,6 +108,7 @@ class WorldVolume(
     private val staging = ByteBuffer
         .allocateDirect(Chunk.SIZE * Chunk.SIZE * Chunk.SIZE * 2)
         .order(ByteOrder.nativeOrder())
+    private val airVolume = ByteBuffer.allocateDirect(sizeX * sizeY * sizeZ * 2)
 
     init {
         glBindTexture(GL_TEXTURE_3D, id)
@@ -101,6 +124,9 @@ class WorldVolume(
             GL_TEXTURE_3D, 0, INTERNAL_FORMAT, sizeX, sizeY, sizeZ, 0,
             FORMAT, GL_UNSIGNED_BYTE, null as ByteBuffer?
         )
+        // GL allocation with a null data pointer is undefined, not AIR. Establish the
+        // texture's exact initial contents before the first shader sample.
+        clearVolume()
     }
 
     val texture: Int get() = id
@@ -113,21 +139,19 @@ class WorldVolume(
      * than by how often they move.
      */
     fun update(position: Vector3f) {
-        val cx = Math.floorDiv(floor(position.x).toInt(), Chunk.SIZE)
-        val cy = Math.floorDiv(floor(position.y).toInt(), Chunk.SIZE)
-        val cz = Math.floorDiv(floor(position.z).toInt(), Chunk.SIZE)
+        val (anchor, changed) = window.update(position.x, position.y, position.z)
+        val anchorX = anchor.chunkX
+        val anchorY = anchor.chunkY
+        val anchorZ = anchor.chunkZ
 
-        val anchorX = cx - across / 2
-        val anchorY = cy - high / 2
-        val anchorZ = cz - across / 2
-
-        if (anchorX != originX || anchorY != originY || anchorZ != originZ) {
-            originX = anchorX * Chunk.SIZE
-            originY = anchorY * Chunk.SIZE
-            originZ = anchorZ * Chunk.SIZE
+        if (changed) {
+            originX = anchor.cellX
+            originY = anchor.cellY
+            originZ = anchor.cellZ
             // Every Cell's position within the volume just changed, so the record of what
             // was uploaded is no longer about anything.
             uploaded.clear()
+            clearVolume()
         }
 
         val cx0 = anchorX
@@ -150,6 +174,15 @@ class WorldVolume(
                 }
             }
         }
+    }
+
+    private fun clearVolume() {
+        // AIR's id is zero; zero packed light is Light.DARK. Keep the encoding explicit.
+        airVolume.clear()
+        while (airVolume.hasRemaining()) airVolume.put(0)
+        airVolume.flip()
+        glBindTexture(GL_TEXTURE_3D, id)
+        glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, sizeX, sizeY, sizeZ, FORMAT, GL_UNSIGNED_BYTE, airVolume)
     }
 
     private fun key(x: Int, y: Int, z: Int): Long =
@@ -219,6 +252,11 @@ class WorldVolume(
         glBindTexture(GL_TEXTURE_3D, id)
         glTexSubImage3D(GL_TEXTURE_3D, 0, bx, by, bz, 1, 1, 1, FORMAT, GL_UNSIGNED_BYTE, cell)
         uploaded.add(key(gx, gy, gz))
+    }
+
+    /** Re-upload every resident Chunk after a block edit and its derived light changes. */
+    fun markWorldChanged() {
+        uploaded.clear()
     }
 
     fun release() {
