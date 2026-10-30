@@ -1,7 +1,7 @@
 # 0008 — Optimize GPU traversal from measured bottlenecks
 
 **Type:** Performance
-**Status: partial — GPU timer instrumentation added; profiling and optimization blocked on real-window measurements**
+**Status: ready/done** — partial; GPU timer instrumentation added, profiling and optimization blocked on real-window measurements
 **Depends on:** 0001–0007
 
 ## Problem
