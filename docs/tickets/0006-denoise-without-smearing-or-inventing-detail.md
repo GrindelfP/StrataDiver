@@ -1,7 +1,7 @@
 # 0006 — Make denoising edge-aware and honest about missing detail
 
 **Type:** Image quality
-**Status: ready/done** — implemented; live visual verification remains
+**Status:** Done
 **Depends on:** 0003, 0004
 
 ## Problem

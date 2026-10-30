@@ -1,7 +1,7 @@
 # 0005 — Remove unwanted distance haze and validate visibility
 
 **Type:** Visual quality
-**Status: ready/done**
+**Status:** Done
 **Depends on:** 0002, 0004
 
 ## Problem

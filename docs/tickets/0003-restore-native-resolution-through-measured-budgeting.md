@@ -1,7 +1,7 @@
 # 0003 — Restore native output resolution with an honest frame budget
 
 **Type:** Renderer / performance
-**Status: ready/done** — partial; instrumentation improved, policy and performance acceptance remain open
+**Status:** Ready for implementation
 **Depends on:** 0001, 0002
 
 ## Problem

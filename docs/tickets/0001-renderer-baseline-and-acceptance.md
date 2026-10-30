@@ -1,7 +1,7 @@
 # 0001 — Establish a repeatable renderer baseline and acceptance gate
 
 **Type:** Measurement / prerequisite
-**Status: ready/done** — instrumentation implemented; measurement and acceptance remain open
+**Status:** Ready for implementation
 **Depends on:** none
 
 ## Problem

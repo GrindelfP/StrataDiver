@@ -1,7 +1,7 @@
 # 0007 — Use motion-aware temporal accumulation instead of reset-only EMA
 
 **Type:** Image quality / temporal stability
-**Status: ready/done** — partial; EMA response corrected, reprojection not implemented
+**Status:** Ready for implementation
 **Depends on:** 0002, 0004, 0006
 
 ## Problem
