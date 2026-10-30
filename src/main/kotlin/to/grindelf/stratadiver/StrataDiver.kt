@@ -372,7 +372,8 @@ class StrataDiver {
      */
     fun capture(frames: Int, path: String, warmupFrames: Int = 0) {
         require(frames > 1 && warmupFrames >= 0)
-        val turnDegreesPerFrame = java.lang.Double.getDouble("stratadiver.benchmarkTurnDegrees", 0.0)
+        val turnDegreesPerFrame = System.getProperty("stratadiver.benchmarkTurnDegrees", "0.0").toDouble()
+        require(turnDegreesPerFrame.isFinite()) { "benchmark turn rate must be finite" }
         init()
         player.spawnAboveGround(5f, 5f)
         streamer.update(player.position)
