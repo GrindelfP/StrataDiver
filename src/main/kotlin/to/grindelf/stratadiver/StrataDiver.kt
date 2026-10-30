@@ -841,7 +841,8 @@ class StrataDiver {
         volume.update(player.position)
 
         if (sceneHasMoved()) {
-            gpu.reset()
+            val worldDiscontinuity = streamer.version != lastTraceVersion || entities.size != lastTraceEntities
+            if (worldDiscontinuity) gpu.reset() else gpu.resetAccumulation()
             lastEye.set(player.position)
             lastLook.set(player.front)
             lastTraceVersion = streamer.version
@@ -864,7 +865,9 @@ class StrataDiver {
         gpu.sample(
             player.position, player.front, player.up,
             FOV_DEGREES, screenWidth / screenHeight,
-            normalisedSun, moonDir, daylight
+            normalisedSun, moonDir, daylight,
+            Matrix4f().perspective(Math.toRadians(FOV_DEGREES.toDouble()).toFloat(), screenWidth / screenHeight, 0.05f, 256f)
+                .lookAt(player.position, Vector3f(player.position).add(player.front), player.up)
         )
         frameTimes.stage(STAGE_TRACE)
 
