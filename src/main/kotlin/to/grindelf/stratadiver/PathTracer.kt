@@ -444,16 +444,20 @@ class PathTracer(
             dx = ctx.dir[0]; dy = ctx.dir[1]; dz = ctx.dir[2]
             thR *= aR; thG *= aG; thB *= aB
 
-            // Early exit: if throughput is negligible, further bounces contribute nothing.
-            if (maxOf(thR, maxOf(thG, thB)) < 0.01f) break
-
             // Already standing off the surface, for the reason given above.
             ox = px; oy = py; oz = pz
             depth++
 
+            // Russian roulette is unbiased only when survivors carry 1/p of their
+            // previous throughput. The bounded probability guarantees progress without
+            // changing the expectation; trace.frag applies the same rule.
             if (depth >= RR_START) {
                 val keep = maxOf(aR, maxOf(aG, aB))
-                if (keep < 1f && rng.nextFloat() > keep) break
+                if (keep < 1f) {
+                    val survival = keep.coerceIn(0.05f, 0.95f)
+                    if (rng.nextFloat() >= survival) break
+                    thR /= survival; thG /= survival; thB /= survival
+                }
             }
         }
 
@@ -739,17 +743,14 @@ class PathTracer(
         // because the direction was drawn to match the BRDF. That is why no division appears
         // here. The other half of this integral is the bounce that escapes, and MIS is what
         // stops the two halves from counting the sky twice.
-        // Skip sky sample on bounces >= 3 (depth >= 3) to save cost — indirect sky is weak.
-        if (depth < 3) {
-            cosineHemisphere(rng, nx, ny, nz, ctx.dir)
-            val wx = ctx.dir[0]; val wy = ctx.dir[1]; val wz = ctx.dir[2]
+        cosineHemisphere(rng, nx, ny, nz, ctx.dir)
+        val wx = ctx.dir[0]; val wy = ctx.dir[1]; val wz = ctx.dir[2]
 
-            if (!occluded(ctx, scene, px, py, pz, wx, wy, wz, MAX_DISTANCE)) {
-                val sky = skyRadiance(ctx, emitters, wx, wy, wz, withSun = false)
-                out[0] += aR * SKY_MIS_WEIGHT * sky[0]
-                out[1] += aG * SKY_MIS_WEIGHT * sky[1]
-                out[2] += aB * SKY_MIS_WEIGHT * sky[2]
-            }
+        if (!occluded(ctx, scene, px, py, pz, wx, wy, wz, MAX_DISTANCE)) {
+            val sky = skyRadiance(ctx, emitters, wx, wy, wz, withSun = false)
+            out[0] += aR * SKY_MIS_WEIGHT * sky[0]
+            out[1] += aG * SKY_MIS_WEIGHT * sky[1]
+            out[2] += aB * SKY_MIS_WEIGHT * sky[2]
         }
 
         // Fireflies are born in this function and nowhere else, so this is where the clamp
@@ -1258,7 +1259,8 @@ class PathTracer(
         return result
     }
 
-    private fun srgbToLinear(c: Float): Float = c.pow(2.2f)
+    private fun srgbToLinear(c: Float): Float =
+        if (c <= 0.04045f) c / 12.92f else ((c + 0.055f) / 1.055f).pow(2.4f)
 }
 
 /** What [PathTracer.probe] found. A report, not a picture. */

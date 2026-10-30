@@ -61,6 +61,8 @@ const float FOG_DENSITY = 0.002;
 const float FIREFLY_CLAMP = 10.0;
 const float SURFACE_EPS = 1e-3;
 const float INV_PI = 0.31830988618;
+// The direct cosine-hemisphere sample and the cosine-BSDF continuation have identical
+// PDFs. The power heuristic therefore assigns each strategy 1/2 for the same sky path.
 const float SKY_MIS_WEIGHT = 0.5;
 const float EMISSION_SCALE = EMISSION_RADIANCE / 15.0;
 const float TAU = 6.28318530718;
@@ -161,7 +163,12 @@ bool opaqueOf(int type) { return uOpaque[type].x == 1; }
 int emissionOf(int type) { return uEmission[type].x; }
 vec2 tileUV(int type, int face) { return uTileUV[type * 6 + face].xy; }
 
-vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
+vec3 toLinear(vec3 c) {
+    bvec3 low = lessThanEqual(c, vec3(0.04045));
+    vec3 linearLow = c / 12.92;
+    vec3 linearHigh = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(linearHigh, linearLow, low);
+}
 
 vec2 artTexel(int type, int face, vec2 uv) {
     vec2 offset = tileUV(type, face);
@@ -417,12 +424,9 @@ vec3 directLight(inout uint s, vec3 p, vec3 n, vec3 albedo, int depth) {
     // The sky: one cosine-weighted sample, and the cosine and the 1/pi of the pdf cancel
     // exactly. The other half of this integral is the bounce that escapes, and MIS is what
     // stops the two halves counting the sky twice.
-    // Skip sky sample on bounces >= 3 (depth >= 3) to save cost — indirect sky is weak.
-    if (depth < 3) {
-        vec3 w = cosineHemisphere(s, n);
-        if (!occluded(p, w, MAX_DISTANCE)) {
-            result += albedo * SKY_MIS_WEIGHT * skyRadiance(w, false);
-        }
+    vec3 w = cosineHemisphere(s, n);
+    if (!occluded(p, w, MAX_DISTANCE)) {
+        result += albedo * SKY_MIS_WEIGHT * skyRadiance(w, false);
     }
 
     // Fireflies are born here and nowhere else, so this is where the clamp belongs.
@@ -515,12 +519,13 @@ void main() {
         throughput *= albedo;
         ray = p;
 
-        // Early exit: if throughput is negligible, further bounces contribute nothing.
-        if (max(throughput.r, max(throughput.g, throughput.b)) < 0.01) break;
-
         if (depth + 1 >= RR_START) {
             float keep = max(albedo.r, max(albedo.g, albedo.b));
-            if (keep < 1.0 && rand(seed) > keep) break;
+            if (keep < 1.0) {
+                float survival = clamp(keep, 0.05, 0.95);
+                if (rand(seed) >= survival) break;
+                throughput /= survival;
+            }
         }
     }
 
