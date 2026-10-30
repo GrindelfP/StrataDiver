@@ -28,6 +28,14 @@ fun check(name: String, condition: Boolean, detail: () -> String) {
 }
 
 fun main() {
+    run {
+        val benchmark = FrameBenchmark(4)
+        listOf(8.0, 4.0, 16.0, 12.0).forEach(benchmark::record)
+        check("benchmark median is nearest-rank p50", benchmark.percentile(50.0) == 8.0)
+        check("benchmark p95 is nearest-rank", benchmark.percentile(95.0) == 16.0)
+        benchmark.record(100.0)
+        check("benchmark capacity is fixed", benchmark.count() == 4)
+    }
     println("\n== Generation is reproducible ==")
     fun cells(x: Int, y: Int, z: Int) = Chunk(x, y, z).let { c ->
         ByteArray(16 * 16 * 16) { i ->

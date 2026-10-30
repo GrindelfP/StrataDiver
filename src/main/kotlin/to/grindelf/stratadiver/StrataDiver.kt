@@ -75,7 +75,15 @@ enum class ControlMode { GAMEPLAY, INTERACTIVE }
  * game is.
  */
 fun main() {
-    StrataDiver().run()
+    val game = StrataDiver()
+    val benchmarkFrames = Integer.getInteger("stratadiver.benchmarkFrames", 0)
+    if (benchmarkFrames > 0) {
+        game.capture(
+            benchmarkFrames,
+            System.getProperty("stratadiver.capture", "baseline.png"),
+            Integer.getInteger("stratadiver.warmupFrames", 120)
+        )
+    } else game.run()
 }
 
 /**
@@ -362,10 +370,22 @@ class StrataDiver {
      * and having it answerable in a second rather than in a playtest is worth more than the
      * elegance of asserting on numbers instead.
      */
-    fun capture(frames: Int, path: String) {
+    fun capture(frames: Int, path: String, warmupFrames: Int = 0) {
+        require(frames > 0 && warmupFrames >= 0)
         init()
         player.spawnAboveGround(5f, 5f)
         streamer.update(player.position)
+
+        val benchmark = FrameBenchmark(frames)
+        repeat(warmupFrames) {
+            frameTimes.begin()
+            val time = if (CONST_TIME) 2f else glfwGetTime().toFloat() * DAY_SPEED
+            val sunDir = Vector3f(0.5f, sin(time.toDouble()).toFloat(), cos(time.toDouble()).toFloat())
+            daylight = max(0.05f, sunDir.y)
+            glClearColor(0.5f * daylight, 0.8f * daylight, daylight + 0.1f, 1.0f)
+            readInput(); tick(); aimedAt = player.raycast(); drawFrame(sunDir)
+            glfwSwapBuffers(window); glfwPollEvents(); frameTimes.end()
+        }
 
         for (i in 0 until frames) {
             // The frame timer is driven here too. It is easy to forget — the capture path
@@ -391,10 +411,17 @@ class StrataDiver {
             glfwSwapBuffers(window)
             glfwPollEvents()
             frameTimes.end()
+            benchmark.record(frameTimes.frameMillis)
             if (i % 10 == 0) println("  frame $i of $frames")
         }
 
         println("wrote $path")
+        val fw = IntArray(1); val fh = IntArray(1)
+        glfwGetFramebufferSize(window, fw, fh)
+        println("benchmark revision=${System.getProperty("stratadiver.revision", "unspecified")}")
+        println("  window=${screenWidth.toInt()}x${screenHeight.toInt()} reported-framebuffer=${fw[0]}x${fh[0]} " +
+            "render=${(screenWidth / pathScale).toInt()}x${(screenHeight / pathScale).toInt()} divisor=$pathScale")
+        println("  ${benchmark.report()} (CPU wall includes any driver/presentation blocking; GPU time unavailable)")
         println("settled at scale $pathScale (${screenWidth / pathScale}x${screenHeight / pathScale}), " +
             "${"%.1f".format(frameTimes.frameMillis)} ms a frame")
         println("  " + STAGES.mapIndexed { i, name ->
