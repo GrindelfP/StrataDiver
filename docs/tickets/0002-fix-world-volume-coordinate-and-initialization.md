@@ -1,8 +1,8 @@
 # 0002 — Make the GPU world volume correct across initialization and movement
 
-**Type:** Bugfix
-**Status:** Done
-**Depends on:** 0001 for reproducible GL observations
+Type: Bugfix<br>
+Status: Done<br>
+Depends on: 0001 for reproducible GL observations
 
 ## Problem
 

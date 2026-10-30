@@ -1,8 +1,8 @@
 # 0008 — Optimize GPU traversal from measured bottlenecks
 
-**Type:** Performance
-**Status:** Ready for implementation
-**Depends on:** 0001–0007
+Type: Performance<br>
+Status: Ready for implementation<br>
+Depends on: 0001–0007
 
 ## Problem
 

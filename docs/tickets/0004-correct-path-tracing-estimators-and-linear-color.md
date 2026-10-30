@@ -1,8 +1,8 @@
 # 0004 — Audit path-tracing estimators and color-space handling
 
-**Type:** Rendering correctness
-**Status:** Done
-**Depends on:** 0001, 0002
+Type: Rendering correctness<br>
+Status: Done<br>
+Depends on: 0001, 0002
 
 ## Problem
 

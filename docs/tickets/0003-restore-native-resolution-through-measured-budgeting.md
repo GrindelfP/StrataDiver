@@ -1,8 +1,8 @@
 # 0003 — Restore native output resolution with an honest frame budget
 
-**Type:** Renderer / performance
-**Status:** Ready for implementation
-**Depends on:** 0001, 0002
+Type: Renderer / performance<br>
+Status: Ready for implementation<br>
+Depends on: 0001, 0002
 
 ## Problem
 
