@@ -31,6 +31,33 @@ fun check(name: String, condition: Boolean, detail: () -> String) {
 fun main() {
     println("\n== Path tracing estimator and color transfer ==")
     run {
+        fun pixel(value: Double, normal: Triple<Double, Double, Double> = Triple(0.0, 0.0, 1.0),
+                   depth: Double = 4.0, albedo: Double = 0.5) = BilateralDenoiser.Pixel(
+            value, value, value, normal.first, normal.second, normal.third, depth, albedo, albedo, albedo)
+        val flat = List(25) { i -> pixel(if (i % 2 == 0) 0.8 else 1.2) }
+        val smooth = BilateralDenoiser.filter(flat, 5, 5)
+        val rawVariance = flat.map { (it.r - 1.0) * (it.r - 1.0) }.average()
+        val filteredVariance = smooth.map { (it.r - 1.0) * (it.r - 1.0) }.average()
+        check("bilateral reduces deterministic flat-region noise", filteredVariance < rawVariance * 0.5,
+            "raw=$rawVariance filtered=$filteredVariance")
+
+        val silhouette = List(25) { i -> if (i % 5 < 2) pixel(0.1) else pixel(0.9, depth = 8.0) }
+        val silhouetteOut = BilateralDenoiser.filter(silhouette, 5, 5)
+        check("parallel silhouette depth leakage is bounded", silhouetteOut[1].r < 0.101,
+            "edge=${silhouetteOut[1].r}")
+        val faces = List(25) { i -> if (i % 5 < 2) pixel(0.2) else pixel(0.8, normal = Triple(1.0, 0.0, 0.0)) }
+        check("voxel-face normal leakage is bounded", BilateralDenoiser.filter(faces, 5, 5)[1].r < 0.201)
+        val albedoEdge = List(25) { i -> if (i % 5 < 2) pixel(0.15, albedo = 0.1) else pixel(0.85, albedo = 0.9) }
+        check("authored albedo detail leakage is bounded", BilateralDenoiser.filter(albedoEdge, 5, 5)[1].r < 0.151)
+        val sky = List(25) { i -> if (i % 5 < 2) pixel(0.3, depth = 0.0) else pixel(0.9, depth = 4.0) }
+        val skyFiltered = BilateralDenoiser.filter(sky, 5, 5)[1].r
+        check("surface radiance does not leak into sky", kotlin.math.abs(skyFiltered - 0.3) < 1e-12,
+            "sky=$skyFiltered")
+        val flatGuides = pixel(0.4)
+        check("same-plane neighboring voxel samples remain eligible",
+            BilateralDenoiser.weight(flatGuides, flatGuides.copy(r = 0.5), 1, 0) > 0.0)
+    }
+    run {
         // The production roulette uses p=max(linear albedo), clamps p to [0.05, 0.95],
         // then divides surviving throughput by p. A fixed-seed Bernoulli experiment
         // checks the expected continuation factor against the no-roulette value.
