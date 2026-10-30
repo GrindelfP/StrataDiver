@@ -139,11 +139,11 @@ class GpuTracer(
      */
     private val SHARPEN = Integer.getInteger("stratadiver.sharpen", 0) / 100f
 
-    /**
-     * EMA temporal accumulation alpha. Higher = more history, less responsive.
-     * Default 0.92 (~12-frame half-life). Tunable with `-Dstratadiver.temporalAlpha=N`.
-     */
-    private val TEMPORAL_ALPHA = System.getProperty("stratadiver.temporalAlpha", "0.92").toFloat()
+    /** Current-frame EMA weight. History contributes (1 - weight) per frame; 0.92
+     * therefore has a 0.27-frame half-life, not a 12-frame half-life. */
+    private val TEMPORAL_ALPHA = System.getProperty("stratadiver.temporalAlpha", "0.92").toFloat().also {
+        require(it in 0f..1f) { "stratadiver.temporalAlpha must be a current-frame weight in [0,1]" }
+    }
 
     /**
      * Which colour attachments each pass writes to.

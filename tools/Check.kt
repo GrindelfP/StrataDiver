@@ -29,6 +29,12 @@ fun check(name: String, condition: Boolean, detail: () -> String) {
 }
 
 fun main() {
+    check("EMA 0.92 current weight leaves 0.08 history per frame",
+        kotlin.math.abs(TemporalResponse.historyWeight(0.92, 1) - 0.08) < 1e-12)
+    check("EMA response half-life matches current-weight convention",
+        kotlin.math.abs(TemporalResponse.halfLifeFrames(0.92) - 0.2744) < 0.001)
+    check("EMA half-life reproduces the declared number of frames",
+        kotlin.math.abs(TemporalResponse.historyWeight(0.2, 3) - 0.512) < 1e-12)
     println("\n== Path tracing estimator and color transfer ==")
     run {
         fun pixel(value: Double, normal: Triple<Double, Double, Double> = Triple(0.0, 0.0, 1.0),
