@@ -2,6 +2,7 @@ package to.grindelf.stratadiver
 
 import org.joml.Vector3f
 import org.joml.Vector3i
+import org.joml.Matrix4f
 import org.lwjgl.opengl.GL11.GL_BLEND
 import org.lwjgl.opengl.GL11.GL_DEPTH_TEST
 import org.lwjgl.opengl.GL11.GL_NEAREST
@@ -80,10 +81,7 @@ class GpuTracer(
         "src/main/resources/shaders/fullscreen.vert",
         "src/main/resources/shaders/denoise.frag"
     )
-    private val emaProgram = ShaderProgram(
-        "src/main/resources/shaders/fullscreen.vert",
-        "src/main/resources/shaders/ema.frag"
-    )
+    private val reprojectProgram = ShaderProgram("src/main/resources/shaders/fullscreen.vert", "src/main/resources/shaders/reproject.frag")
 
     /** The fullscreen quad every pass draws. Position only; UVs come from the shader. */
     private val quad = Geometry.upload(TRACE_QUAD, Geometry.POS_UV)!!
@@ -108,6 +106,16 @@ class GpuTracer(
      */
     private var gbufferA = 0  // normal.xyz, depth
     private var gbufferB = 0  // albedo.rgb, 1
+    private var worldPosition = 0
+    private var previousNormalDepth = 0
+    private var previousAlbedo = 0
+    private var previousPosition = 0
+    private var nextNormalDepth = 0
+    private var nextAlbedo = 0
+    private var nextPosition = 0
+    private var previousViewProjection = Matrix4f()
+    private var historyValid = false
+    private var historyDebug = java.lang.Boolean.getBoolean("stratadiver.historyDebug")
 
     /** The average after the denoise pass has had it. This is what goes to the screen. */
     private var denoised = 0
@@ -154,7 +162,7 @@ class GpuTracer(
      * attachments a shader's `location = N` outputs land in. Left at its default of
      * attachment 0 only, an MRT shader silently drops the other two into nowhere.
      */
-    private val mrtDrawBuffers = MemoryUtil.memAllocInt(3)
+    private val mrtDrawBuffers = MemoryUtil.memAllocInt(4)
     private val singleDrawBuffer = MemoryUtil.memAllocInt(1)
 
     /** Samples in the current average. Zero means nothing has been drawn. */
@@ -232,7 +240,7 @@ class GpuTracer(
     private fun allocate() {
         if (width <= 0 || height <= 0) return
 
-        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, worldPosition, previousNormalDepth, previousAlbedo, previousPosition, nextNormalDepth, nextAlbedo, nextPosition, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
 
         read = floatTexture()
@@ -240,12 +248,15 @@ class GpuTracer(
         targetTexture = floatTexture()
         gbufferA = floatTexture()
         gbufferB = floatTexture()
+        worldPosition = floatTexture()
+        previousNormalDepth = floatTexture(); previousAlbedo = floatTexture(); previousPosition = floatTexture()
+        nextNormalDepth = floatTexture(); nextAlbedo = floatTexture(); nextPosition = floatTexture()
         denoised = floatTexture()
         history = floatTexture()
         historyNext = floatTexture()
 
         mrtDrawBuffers.clear()
-        mrtDrawBuffers.put(intArrayOf(GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2))
+        mrtDrawBuffers.put(intArrayOf(GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3))
         mrtDrawBuffers.flip()
         singleDrawBuffer.clear()
         singleDrawBuffer.put(GL_COLOR_ATTACHMENT0)
@@ -267,6 +278,8 @@ class GpuTracer(
         clearAccumulator(write)
         clearAccumulator(history)
         clearAccumulator(historyNext)
+        for (id in intArrayOf(previousNormalDepth, previousAlbedo, previousPosition, nextNormalDepth, nextAlbedo, nextPosition)) clearAccumulator(id)
+        historyValid = false
     }
 
     private fun floatTexture(): Int {
@@ -300,9 +313,13 @@ class GpuTracer(
      */
     fun reset() {
         sampleCount = 0
+        historyValid = false
         clearAccumulator(history)
         clearAccumulator(historyNext)
     }
+
+    /** Restart exact Monte Carlo convergence while retaining reprojection history for camera motion. */
+    fun resetAccumulation() { sampleCount = 0 }
 
     /** Traces one sample per pixel and folds it into the average. */
     fun sample(
@@ -313,7 +330,8 @@ class GpuTracer(
         aspect: Float,
         sunDir: Vector3f,
         moonDir: Vector3f,
-        daylight: Float
+        daylight: Float,
+        viewProjection: Matrix4f
     ) {
         if (width <= 0 || height <= 0) return
 
@@ -327,6 +345,7 @@ class GpuTracer(
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, write, 0)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gbufferA, 0)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gbufferB, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, worldPosition, 0)
         glDrawBuffers(mrtDrawBuffers)
         traceProgram.use()
 
@@ -407,27 +426,31 @@ class GpuTracer(
             glDrawArrays(GL_TRIANGLES, 0, 6)
         }
 
-        // --- Pass 4: temporal EMA — historyNext = lerp(history, denoised, alpha) ---
-        // This smooths the image over time, reducing grain while moving.
-        // On reset (camera/world change), history is cleared so no ghosting persists.
-        // Ping-pong between history and historyNext to avoid read-write hazard.
+        // --- Pass 4: motion-aware reprojection, then save the current surface guides. ---
         val source = if (DENOISE) denoised else read
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, historyNext, 0)
-        glDrawBuffers(singleDrawBuffer)
-        emaProgram.use()
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, source)
-        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, history)
-        emaProgram.setInt("uCurrent", 0)
-        emaProgram.setInt("uHistory", 1)
-        emaProgram.setFloat("uAlpha", TEMPORAL_ALPHA)
-        glBindVertexArray(quad.vao)
-        glDrawArrays(GL_TRIANGLES, 0, 6)
-
-        // Swap: historyNext becomes the new history for next frame and for present
-        val tmp = history
-        history = historyNext
-        historyNext = tmp
-
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, nextNormalDepth, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, nextAlbedo, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, nextPosition, 0)
+        glDrawBuffers(mrtDrawBuffers)
+        reprojectProgram.use()
+        for (i in 0..7) { glActiveTexture(GL_TEXTURE0 + i); glBindTexture(GL_TEXTURE_2D, when(i) {
+            0 -> source; 1 -> gbufferA; 2 -> gbufferB; 3 -> worldPosition; 4 -> history
+            5 -> previousNormalDepth; 6 -> previousAlbedo; else -> previousPosition
+        }) }
+        listOf("uCurrent", "uCurrentNormalDepth", "uCurrentAlbedo", "uCurrentPosition", "uHistory", "uPreviousNormalDepth", "uPreviousAlbedo", "uPreviousPosition").forEachIndexed { i, n -> reprojectProgram.setInt(n, i) }
+        reprojectProgram.setMatrix("uPreviousViewProjection", previousViewProjection)
+        reprojectProgram.setVec2("uTexel", 1f / width, 1f / height)
+        reprojectProgram.setFloat("uAlpha", TEMPORAL_ALPHA)
+        reprojectProgram.setInt("uHistoryValid", if (historyValid) 1 else 0)
+        reprojectProgram.setInt("uDebug", if (historyDebug) 1 else 0)
+        glBindVertexArray(quad.vao); glDrawArrays(GL_TRIANGLES, 0, 6)
+        val guide = previousNormalDepth; previousNormalDepth = nextNormalDepth; nextNormalDepth = guide
+        val alb = previousAlbedo; previousAlbedo = nextAlbedo; nextAlbedo = alb
+        val pos = previousPosition; previousPosition = nextPosition; nextPosition = pos
+        previousViewProjection.set(viewProjection)
+        historyValid = true
+        val historySwap = history; history = historyNext; historyNext = historySwap
         // Clean up texture bindings to prevent leakage into present pass
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0)
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0)
@@ -514,7 +537,7 @@ class GpuTracer(
     fun release() {
         passTimers.release()
         quad.release()
-        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
+        for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, worldPosition, previousNormalDepth, previousAlbedo, previousPosition, nextNormalDepth, nextAlbedo, nextPosition, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)
         MemoryUtil.memFree(mrtDrawBuffers)
         MemoryUtil.memFree(singleDrawBuffer)

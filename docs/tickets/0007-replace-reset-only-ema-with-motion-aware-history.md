@@ -1,7 +1,7 @@
 # 0007 — Use motion-aware temporal accumulation instead of reset-only EMA
 
 Type: Image quality / temporal stability<br>
-Status: Ready for implementation<br>
+Status: Implementation complete; visual acceptance pending<br>
 Depends on: 0002, 0004, 0006
 
 ## Problem
@@ -30,5 +30,6 @@ Reprojection math and stationary fixtures can be checked offline where possible.
 ## Implementation notes
 
 - `ema.frag`'s parameter is the **current-frame weight**, not the history weight. At 0.92, history is multiplied by 0.08 per frame and has a 0.274-frame half-life; this does not describe a 12-frame memory. `TemporalResponse` and `tools/Check.kt` pin that response, and invalid weights are rejected.
-- Motion-aware reuse is **not implemented**. The GPU path currently retains only the current frame's first-hit normal/depth and albedo guides; it does not retain prior-frame guides or a previous camera transform. Reusing history after motion without both would map stale surfaces to pixels without a sound disocclusion test. The existing camera/world reset remains in place; history weight was not increased.
-- No history-validity/rejection debug view or controlled static/pan fixture was added. Walking, turning, stopping, and block-edit GL playtests remain unavailable in this implementation session. Ticket remains partial until the prior-frame reprojection pipeline and live verification are completed.
+- The trace pass now writes first-hit world position in a fourth MRT attachment. A GL 3.3 fullscreen pass projects that position through the retained previous view-projection matrix, rejects out-of-bounds, sky, invalid, position/depth, normal, and albedo mismatches, clamps accepted history to the current 3x3 radiance neighborhood, and stores the current guides for the next frame. `-Dstratadiver.historyDebug=true` displays accepted pixels green and rejected pixels red.
+- Camera motion restarts the stationary progressive average but keeps temporal history eligible for reprojection. World version/entity-count changes invalidate it; resize reallocates and invalidates all history. Stationary frames continue using the same progressive average as before, then the documented current-frame-weight EMA.
+- Offline compilation, shader validation, and headless checks pass. Walking, turning, stopping, disocclusion quality, and block-edit ghost rejection still require real GL playtesting; visual acceptance remains pending.

@@ -111,6 +111,7 @@ Hit gHit;
 layout(location = 0) out vec4 oRadiance;
 layout(location = 1) out vec4 oGbufferA;  // normal.xyz, depth
 layout(location = 2) out vec4 oGbufferB;  // albedo.rgb, 1
+layout(location = 3) out vec4 oWorldPosition; // first-hit world position, valid iff depth > 0
 
 // --- Randomness ---
 
@@ -551,6 +552,7 @@ void main() {
     if (firstDistance > 0.0) {
         oGbufferA = vec4(firstNormal, firstDistance);
         oGbufferB = vec4(firstAlbedo, 1.0);
+        oWorldPosition = vec4(uEye + startDir * firstDistance, 1.0);
     } else {
         // No surface was met. A zero depth and a zero normal is the honest answer for the
         // sky, and it matters: the sky is a smooth model with no noise of its own, and a
@@ -558,5 +560,6 @@ void main() {
         // the horizon.
         oGbufferA = vec4(0.0);
         oGbufferB = vec4(0.0);
+        oWorldPosition = vec4(0.0);
     }
 }
