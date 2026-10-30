@@ -62,6 +62,7 @@ class GpuTracer(
     atlasPixels: IntArray,
     private val atlasSize: Int = Atlas.TILES * Atlas.TILE_PX
 ) {
+    private val passTimers = GpuPassTimers()
 
     private val traceProgram = ShaderProgram(
         "src/main/resources/shaders/trace.vert",
@@ -359,10 +360,13 @@ class GpuTracer(
         glUniform4iv(traceProgram.uniform("uAttenuation"), attenuationTable)
         glUniform4fv(traceProgram.uniform("uTileUV"), tileUV)
 
+        passTimers.begin(0)
         glBindVertexArray(quad.vao)
         glDrawArrays(GL_TRIANGLES, 0, 6)
+        passTimers.end(0)
 
         // --- Pass 2: average this sample with everything already traced ---
+        passTimers.begin(1)
         //
         // Two inputs, and reading only the previous average is the version of this that
         // looks right and renders black: the first frame divides nothing by nothing and
@@ -429,6 +433,8 @@ class GpuTracer(
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, 0)
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        passTimers.end(1)
+        passTimers.poll()
 
         // Everything below is a check on the GPU rather than on this file. A trace pass
         // that writes nothing, or an accumulation that reads the wrong texture, produces a
@@ -448,6 +454,7 @@ class GpuTracer(
 
     /** Puts the average on the default framebuffer, through the film. */
     fun present(screenWidth: Int, screenHeight: Int) {
+        passTimers.begin(2)
         presentProgram.use()
         // The trace pass set the viewport to its own size, which is smaller than the window
         // by exactly the resolution divisor. Drawing to the default framebuffer without
@@ -473,7 +480,10 @@ class GpuTracer(
         glDrawArrays(GL_TRIANGLES, 0, 6)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
+        passTimers.end(2)
     }
+
+    fun gpuTimingReport(): String = passTimers.report()
 
     /**
      * The average, as bytes, for anything that needs to look at it off-screen.
@@ -500,6 +510,7 @@ class GpuTracer(
     }
 
     fun release() {
+        passTimers.release()
         quad.release()
         for (id in intArrayOf(read, write, targetTexture, gbufferA, gbufferB, denoised, history, historyNext)) if (id != 0) glDeleteTextures(id)
         if (target != 0) glDeleteFramebuffers(target)

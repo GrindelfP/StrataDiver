@@ -427,7 +427,8 @@ class StrataDiver {
             "OpenGL ${org.lwjgl.opengl.GL11.glGetString(org.lwjgl.opengl.GL11.GL_VERSION)}")
         println("  window=${screenWidth.toInt()}x${screenHeight.toInt()} reported-framebuffer=${fw[0]}x${fh[0]} " +
             "render=${(screenWidth / pathScale).toInt()}x${(screenHeight / pathScale).toInt()} divisor=$pathScale")
-        println("  ${benchmark.report()} (CPU wall includes any driver/presentation blocking; GPU time unavailable)")
+        println("  ${benchmark.report()} (CPU wall includes possible driver/presentation blocking)")
+        println("  ${gpu.gpuTimingReport()} (asynchronous GL elapsed queries; unavailable results are omitted)")
         println("settled at scale $pathScale (${screenWidth / pathScale}x${screenHeight / pathScale}), " +
             "${"%.1f".format(frameTimes.frameMillis)} ms a frame")
         println("  " + STAGES.mapIndexed { i, name ->
