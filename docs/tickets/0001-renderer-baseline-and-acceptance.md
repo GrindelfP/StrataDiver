@@ -1,7 +1,7 @@
 # 0001 — Establish a repeatable renderer baseline and acceptance gate
 
 Type: Measurement / prerequisite<br>
-Status: In progress — 1280×720 baseline measured; acceptance checks remain<br>
+Status: Ready for implementation<br>
 Depends on: none
 
 ## Problem

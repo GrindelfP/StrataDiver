@@ -1,7 +1,7 @@
 # 0007 — Use motion-aware temporal accumulation instead of reset-only EMA
 
 Type: Image quality / temporal stability<br>
-Status: Implementation complete; visual acceptance pending<br>
+Status: Ready for implementation<br>
 Depends on: 0002, 0004, 0006
 
 ## Problem
