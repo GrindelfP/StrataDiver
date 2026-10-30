@@ -60,10 +60,10 @@ class VolumeWindow(private val across: Int, private val high: Int) {
  * while the world streams in is one sub-image per new Chunk.
  *
  * **Where the edge is.** A Cell outside the volume reads as AIR, which is what a Cell in a
- * Chunk the world has not generated also reads as on the CPU side. The tracer's aerial
- * perspective is what turns that edge into haze rather than a cliff, and it is why the
- * volume can be smaller than [PathTracer.MAX_DISTANCE] without a hard line appearing in the
- * sky.
+ * Chunk the world has not generated also reads as on the CPU side. The ray walk stops at
+ * this edge and returns the same sky radiance as it would after walking through AIR. The
+ * volume may be smaller than [PathTracer.MAX_DISTANCE]; its boundary is a data/coverage
+ * question, not an atmosphere effect.
  */
 class WorldVolume(
     private val world: GridWorld,

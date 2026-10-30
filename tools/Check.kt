@@ -1282,6 +1282,12 @@ private fun pathTracingChecks() {
         val away = prober.probe(2.5f, 1.5f, 2.5f, 0f, 1f, 0f)
         !away.hit
     })
+    check("a ray leaving represented chunks through AIR returns a miss, not a volume wall", run {
+        // The fake world contains only chunk (0,0,0). Starting beyond its east edge must
+        // not invent a hit at the edge; the renderer's no-hit path is the sky path.
+        val outside = prober.probe(17.5f, 12.5f, 6.5f, 1f, 0f, 0f)
+        !outside.hit
+    })
     check("a ray starting inside a Cell is stopped there", run {
         // The starting Cell is the answer, at distance zero. Anything else is a walk that
         // has stepped past the geometry it is standing in.
@@ -1484,6 +1490,11 @@ private fun pathTracingChecks() {
         if (emissive) for (x in 4..7) for (y in 4..7) chunk.setBlock(x, 4, 1, BlockType.GLOWSTONE)
         return worldOf(chunk)
     }
+
+    val openSky = conePixels(worldOf(blankChunk(0, 0, 0)), camera(8.5f, 8.5f, 8.5f, 0f, 1f, 0f), 64)
+    check("an unobstructed ray leaving the world returns clear sky", run {
+        openSky.all { it.isFinite() && it >= 0f } && openSky[2] > openSky[0]
+    }, "sky radiance was ${openSky.contentToString()}")
 
     val darkRoom = conePixels(sealedRoom(false), downCamera(10.5f, 10.5f, 6.5f), 400)
     val litRoom = conePixels(sealedRoom(true), downCamera(10.5f, 10.5f, 6.5f), 400)
