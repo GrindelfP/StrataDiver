@@ -33,4 +33,10 @@ Offline shader validation and CPU fixtures do not measure GPU performance. **Rea
 
 No real-window GPU measurements are available from this environment. Accordingly traversal is unchanged, no bottleneck is claimed, and optimization / acceptance remain blocked pending repeated captures on the target GPU at the same scene and render size, followed by stationary and moving visual playtests. Do not infer GPU cost from CPU frame-wall numbers or claim 60 fps from these tools alone.
 
+### Latest pass-level evidence (ticket 0001)
+
+The latest reported measurements are three short runs on an M1 Pro, macOS 26.6.2, OpenGL 4.1 / Metal, at a true 1280x720 render size. GPU trace median/p95 was approximately 32.4–34.1 / 34.0–36.0 ms; grouped resolve was 1.15–1.20 ms; presentation was 0.04–0.06 ms. CPU frame wall was 37.6–40 ms and the swap call alone was 31.6–32.7 ms, which is not a pure scanout measurement.
+
+This identifies trace as the dominant measured GPU pass, not traversal as the dominant work *within* trace. The timings do not separate primary/secondary DDA walks from shadow walks, hit distance, shading, or bounce count. They are therefore not grounds for a traversal rewrite. No capture was run in this worktree; these values are carried forward from the ticket 0001 report, not represented as a local reproduction.
+
 For a GPU-capable local run, use the existing capture path with a warmup and enough measured frames, passing `-Dstratadiver.gpuTimers=true`; record revision, OS/GPU/OpenGL metadata, window/framebuffer/render dimensions and both timing reports. Query availability can lag capture completion, so the report's sample count matters. Compare identical configurations; CPU wall can include driver/presentation blocking and GPU query scopes measure GPU elapsed time, not the CPU submission cost.
