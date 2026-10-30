@@ -39,4 +39,10 @@ The latest reported measurements are three short runs on an M1 Pro, macOS 26.6.2
 
 This identifies trace as the dominant measured GPU pass, not traversal as the dominant work *within* trace. The timings do not separate primary/secondary DDA walks from shadow walks, hit distance, shading, or bounce count. They are therefore not grounds for a traversal rewrite. No capture was run in this worktree; these values are carried forward from the ticket 0001 report, not represented as a local reproduction.
 
+### What remains blocked
+
+The next useful experiment must attribute work inside the trace pass. On GL 4.1, an opt-in diagnostic shader variant can accumulate per-fragment counts for Cell visits, hit distance, path depth, and shadow-ray walks into diagnostic render targets. It must be disabled in the normal renderer, and diagnostic timings must not be compared as if they were release timings: the extra counters and output writes perturb the pass. First use the variant to identify the distribution of work; then time a separately controlled, semantics-preserving optimization against the uninstrumented baseline.
+
+For that experiment, hold revision, camera/scene, framebuffer and render dimensions, window mode, and warmup/capture length fixed. Record the same non-blocking GPU pass distributions for baseline and candidate, plus the diagnostic distributions from a separate run. Keep all CPU tracer fixtures unchanged and run `tools/Check.kt`; validate any touched shader offline with `glslangValidator`. A target-machine window and repeated captures are prerequisites. Until those are available, no traversal-specific diagnostic or optimization is implemented here.
+
 For a GPU-capable local run, use the existing capture path with a warmup and enough measured frames, passing `-Dstratadiver.gpuTimers=true`; record revision, OS/GPU/OpenGL metadata, window/framebuffer/render dimensions and both timing reports. Query availability can lag capture completion, so the report's sample count matters. Compare identical configurations; CPU wall can include driver/presentation blocking and GPU query scopes measure GPU elapsed time, not the CPU submission cost.
