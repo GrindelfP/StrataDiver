@@ -226,6 +226,7 @@ class StrataDiver {
     private lateinit var sound: SoundEngine
     private val fps = FpsCounter()
     private val frameTimes = FrameTimes(STAGES)
+    private val resolutionPolicy = ResolutionPolicy(PATH_BUDGET_MS, maximumDivisor = PATH_SCALE_LIMIT)
     private lateinit var layout: SlotLayout
 
     /**
@@ -539,7 +540,10 @@ class StrataDiver {
         screenWidth = fw[0].toFloat()
         screenHeight = fh[0].toFloat()
         glViewport(0, 0, fw[0], fh[0])
-        println("gl surface ${fw[0]}x${fh[0]} (window asked for ${WINDOW_WIDTH.toInt()}x${WINDOW_HEIGHT.toInt()})")
+        val viewport = IntArray(4)
+        glGetIntegerv(GL_VIEWPORT, viewport)
+        println("gl surface ${viewport[2]}x${viewport[3]} viewport (window=${fw[0]}x${fh[0]}, " +
+            "GLFW framebuffer queried separately in diagnostics)")
 
         layout = SlotLayout(screenWidth, screenHeight)
 
@@ -921,37 +925,14 @@ class StrataDiver {
      * which is worse than either.
      */
     private fun adaptPathScale() {
-        // Driven by the tracing stage, not by the whole frame.
-        //
-        // The whole frame looks like the obvious answer and is not: it includes the swap,
-        // and the swap blocks on vsync for as long as the display wants, so it reports
-        // 250 ms of "cost" for 50 ms of work and the controller then sits pinned at minimum
-        // resolution forever. The tracing stage is the one that scales with the picture —
-        // measured at 11.7 ms at 320x180, 16.5 at 640x360 and 39.5 at 1280x720, which is
-        // four times the pixels for four times the time and therefore the only number here
-        // that is describing the renderer rather than the monitor.
-        traceMillisAveraged =
-            if (traceSamplesAveraged == 0) frameTimes.average(STAGE_TRACE)
-            else traceMillisAveraged * 0.7 + frameTimes.average(STAGE_TRACE) * 0.3
-        traceSamplesAveraged++
-        if (traceSamplesAveraged < SCALE_DECISION_FRAMES) return
-
-        val moving = when {
-            traceMillisAveraged > PATH_BUDGET_MS -> 1
-            traceMillisAveraged < PATH_BUDGET_MS * 0.7 -> -1
-            else -> 0
-        }
-        traceSamplesAveraged = 0
-
-        if (moving != 0) {
-            val wanted = (pathScale + moving).coerceIn(1, pathScaleMax)
-            if (wanted != pathScale) {
-                pathScale = wanted
-                // resize() discards the average, so the picture restarts at the new size
-                // rather than being stretched from the old one. Not called here: the next
-                // frame's drawTracedWorld does it, before anything reads the size, and doing
-                // it in both places is how a half-resized accumulator appears.
-            }
+        // Sum the measured CPU stages, not trace alone. The frame timer is closed after
+        // swap, so this deliberately excludes driver/vsync blocking; optional GL queries
+        // report GPU pass times but are neither always enabled nor a complete frame total.
+        val cpuWorkMillis = STAGES.indices.sumOf { frameTimes.average(it) }
+        val wanted = resolutionPolicy.observe(pathScale, cpuWorkMillis)
+        if (wanted != pathScale) {
+            pathScale = wanted
+            // The next draw resizes the target and clears its progressive history.
         }
     }
 

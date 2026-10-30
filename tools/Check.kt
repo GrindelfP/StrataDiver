@@ -99,6 +99,20 @@ fun main() {
         average.add(50.0)
         check("wraparound still averages retained samples", average.average() == 40.0)
     }
+    run {
+        val policy = ResolutionPolicy(16.7, maximumDivisor = 3, decisionFrames = 3)
+        var scale = 1
+        repeat(2) { scale = policy.observe(scale, 30.0) }
+        check("resolution policy waits for a complete decision window", scale == 1)
+        scale = policy.observe(scale, 30.0)
+        check("over-budget CPU work degrades one bounded divisor step", scale == 2)
+        repeat(3) { scale = policy.observe(scale, 15.0) }
+        check("hysteresis prevents recovery near budget", scale == 2)
+        repeat(3) { scale = policy.observe(scale, 10.0) }
+        check("sustained headroom recovers one divisor step", scale == 1)
+        repeat(6) { scale = policy.observe(scale, 100.0) }
+        check("resolution policy remains within divisor bounds", scale == 2)
+    }
     println("\n== GPU volume window coordinates ==")
     val volumeWindow = VolumeWindow(across = 9, high = 7)
     val (initial, firstMove) = volumeWindow.update(-0.1f, 64f, 16f)
